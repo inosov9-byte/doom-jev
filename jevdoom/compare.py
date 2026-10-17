@@ -100,6 +100,7 @@ def main(argv=None):
     ap.add_argument("--no-video", action="store_true")
     ap.add_argument("--window", action="store_true")
     ap.add_argument("--runs", default="runs")
+    ap.add_argument("--out", help="write into this folder (add arms to an existing comparison)")
     args = ap.parse_args(argv)
 
     problems = preflight(args.arms, args.local_url, args.dry_run)
@@ -108,7 +109,7 @@ def main(argv=None):
 
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     kind = "probe" if args.probe else "live"
-    out_dir = Path(args.runs) / (f"compare-{stamp}-{kind}" + ("-dryrun" if args.dry_run else ""))
+    out_dir = Path(args.out) if args.out else Path(args.runs) / (f"compare-{stamp}-{kind}" + ("-dryrun" if args.dry_run else ""))
     out_dir.mkdir(parents=True, exist_ok=True)
     meta = {"kind": kind, "arms": args.arms, "seeds": args.seeds, "dry_run": args.dry_run,
             "timeout_s": args.timeout, "commit": git_commit(), "started": stamp}
@@ -131,6 +132,9 @@ def main(argv=None):
         return
 
     results = []
+    prev = out_dir / "results.json"
+    if prev.exists():                                   # adding arms to an existing comparison
+        results = [r for r in json.loads(prev.read_text()).get("runs", []) if r["arm"] not in args.arms]
     for seed in args.seeds:
         for arm in args.arms:
             print(f"--- seed {seed} arm {arm}", flush=True)
@@ -140,7 +144,9 @@ def main(argv=None):
             print(f"    {s['outcome']:8s} progress {s['route_progress_pct']:5.1f}%  {s['game_seconds']:5.1f}s  "
                   f"kills {s['kills']}  latency {s['latency_median']}s  cost ${s['cost_usd']}", flush=True)
             (out_dir / "results.json").write_text(json.dumps({"meta": meta, "runs": results}, indent=2))
-    agg = aggregate(results, args.arms)
+    all_arms = list(dict.fromkeys([r["arm"] for r in results]))
+    agg = aggregate(results, all_arms)
+    meta["arms"] = all_arms
     per_run = [{k: r[k] for k in ("arm", "seed", "outcome", "route_progress_pct", "game_seconds", "kills",
                                   "damage_taken", "latency_median", "decisions_per_s", "errors", "cost_usd")}
                for r in results]
