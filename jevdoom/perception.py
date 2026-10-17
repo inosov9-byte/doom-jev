@@ -159,6 +159,18 @@ class Perception:
             if hint:
                 parts.append(f"Route to exit: {hint}.")
 
+        if self.prev is not None and obs.damage_taken > self.prev.damage_taken and not vis:
+            # Doom's status-bar face turns toward the damage source; give the same cue in words:
+            # the nearest monster with a clear line of sight.
+            src = None
+            for mo in sorted(obs.monsters, key=lambda mo: obs.dist_to(mo.x, mo.y)):
+                b = obs.bearing_to(mo.x, mo.y)
+                if self.ray(obs, b)[0] >= obs.dist_to(mo.x, mo.y) - 24:
+                    src = b
+                    break
+            if src is not None:
+                parts.append(f"Being shot from out of view, {_side(src)}.")
+
         if self.prev is not None and last_cmd:
             moved = math.hypot(obs.x - self.prev.x, obs.y - self.prev.y)
             dmg = obs.damage_taken - self.prev.damage_taken

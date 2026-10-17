@@ -64,5 +64,6 @@ class JevClient:
                 code = getattr(e, "code", None)
                 if k == attempts - 1 or (code is not None and code < 500 and code != 429):
                     raise
+                print(f"retry {k + 1}/{attempts - 1} after {type(e).__name__} {code or ''}", flush=True)
                 time.sleep(5 * (k + 1))
         raise RuntimeError("unreachable")
