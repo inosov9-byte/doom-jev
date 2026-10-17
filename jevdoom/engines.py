@@ -21,7 +21,7 @@ from .jev import HOSTED_URL, INSTRUCTIONS, LOCAL_URL, JevClient, student_request
 PRICES = {"claude-haiku-5-5": (0.10, 0.50)}
 
 
-ENV_FILE = Path(os.environ.get("JEVDOOM_ENV", r"C:	mp\jev-doom\.env"))   # outside the repo and OneDrive
+ENV_FILE = Path(os.environ.get("JEVDOOM_ENV", r"C:\tmp\jev-doom\.env"))   # outside the repo and OneDrive
 
 
 def load_credentials() -> None:

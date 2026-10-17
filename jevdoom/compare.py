@@ -45,7 +45,7 @@ def preflight(arms: list[str], local_url: str, dry_run: bool) -> list[str]:
             problems.append("haiku: anthropic SDK not installed in this venv")
         if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
                 or os.environ.get("ANTHROPIC_PROFILE") or Path.home().joinpath(".config", "anthropic").exists()):
-            problems.append("haiku: no Anthropic credentials (put ANTHROPIC_API_KEY=... in C:\tmp\jev-doom\.env, "
+            problems.append(r"haiku: no Anthropic credentials (put ANTHROPIC_API_KEY=... in C:\tmp\jev-doom\.env, "
                             "set the env var, or run `ant auth login`)")
     return problems
 
