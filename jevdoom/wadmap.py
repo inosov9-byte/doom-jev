@@ -212,6 +212,23 @@ class NavGrid:
                         self._ledge_index.setdefault((rr, cc), []).append(ln)
         return self._ledge_index.get((r, c), ())
 
+    def reachable(self, start: tuple[float, float]) -> np.ndarray:
+        """Boolean mask of cells reachable from start under this grid's world state."""
+        mask = np.zeros((self.h, self.w), bool)
+        s = self.nearest_free(*self.to_cell(*start))
+        if s is None:
+            return mask
+        stack = [s]
+        mask[s] = True
+        while stack:
+            r, c = stack.pop()
+            for dr, dc in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < self.h and 0 <= cc < self.w and not mask[rr, cc] and not self.blocked[rr, cc]                         and self._edge_ok(r, c, rr, cc):
+                    mask[rr, cc] = True
+                    stack.append((rr, cc))
+        return mask
+
     def nearest_free(self, r: int, c: int, radius: int = 6) -> tuple[int, int] | None:
         best = None
         for dr in range(-radius, radius + 1):

@@ -90,6 +90,20 @@ The same rule-based expert, delayed to 0.7 s per decision (the local Jev speed),
 | Claude Haiku 5.5 | measured in the comparison |
 | Rules expert | ~0 |
 
+## Beyond E1M1 (branch `phase/multi-level`)
+
+Later levels need things E1M1 does not: keys, locked doors, doors opened by a switch, a walk-over line or a shot, and lifts.
+
+- `progression.py` models the map as a world state (keys held, trigger tags fired). A breadth-first search over key pickups and triggers finds the shortest sequence of subgoals after which the exit is reachable. Triggers are only expanded if they enlarge the reachable area, which keeps the search small.
+- The compass follows the current subgoal: "Route to red keycard: ...", "Route to switch: ...", then "Route to exit: ...". The text adds keys held, switches, and "door (locked, needs red key)". On E1M1 the text is unchanged.
+- The expert presses switches, fires at shoot-switches, walks onto keys and trigger lines, and presses use on a lift wall when the route is blocked by a ledge.
+
+| Level | Progression found | Expert result (no time pressure) |
+|---|---|---|
+| E1M1 | exit | clears, 5 of 5 seeds |
+| E1M2 | red keycard, switch, exit | clears 2 of 3 seeds (47 to 51 s); third died at 97.5% |
+| E1M3 | not yet: a one-way climb the planner does not model | open |
+
 ## Running locally on an AMD laptop
 
 - AMD's ROCm 7.2.1 PyTorch for Windows supports the Radeon 890M (gfx1150). 0.8B: 0.61 s per call vs 4.3 s on CPU.

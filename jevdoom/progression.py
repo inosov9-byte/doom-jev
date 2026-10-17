@@ -21,6 +21,16 @@ KEY_NAMES = {"blue": "blue keycard", "yellow": "yellow keycard", "red": "red key
 DOOR_TRIGGERS = {2: "W", 4: "W", 29: "S", 46: "G", 61: "S", 63: "S", 86: "W", 90: "W", 103: "S",
                  105: "W", 106: "W", 108: "W", 109: "W", 111: "S", 112: "S", 114: "S", 115: "S"}
 LIFT_TRIGGERS = {10: "W", 21: "S", 62: "S", 88: "W", 120: "W", 121: "W", 122: "S", 123: "S"}
+# Any other tagged trigger moves floors/ceilings (raise floor, stairs, ...): once fired, its sectors
+# are treated like lifts (passable whatever their height). Lights, exits and teleports are excluded.
+S_TYPES = {7, 9, 14, 15, 18, 20, 21, 23, 29, 41, 42, 49, 50, 55, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,
+           99, 101, 102, 103, 111, 112, 113, 114, 115, 116, 122, 123, 127, 131, 132, 133, 134, 135, 136, 137, 140}
+G_TYPES = {24, 46, 47}
+NOT_MOVERS = {11, 51, 52, 124, 197, 198, 12, 13, 17, 35, 79, 80, 81, 104, 138, 139, 39, 97, 125, 126, 48}
+
+
+def how(special: int) -> str:
+    return "S" if special in S_TYPES else "G" if special in G_TYPES else "W"
 
 
 @dataclass
@@ -42,8 +52,13 @@ def world(m: MapData, keys: frozenset, opened: frozenset) -> MapData:
             doors.add(l.back)
         if l.special in LIFT_TRIGGERS and l.tag:
             lifts |= {i for i, t in enumerate(m.sector_tag) if t == l.tag}
+    door_tags = {l.tag for l in m.lines if l.special in DOOR_TRIGGERS}
     for tag in opened:
-        doors |= {i for i, t in enumerate(m.sector_tag) if t == tag}
+        secs = {i for i, t in enumerate(m.sector_tag) if t == tag}
+        if tag in door_tags:
+            doors |= secs
+        else:
+            lifts |= secs
     return dataclasses.replace(m, door_sectors=doors, lift_sectors=lifts)
 
 
@@ -62,7 +77,7 @@ def solve(m: MapData, start: tuple[float, float], max_depth: int = 5, verbose: b
     keys_avail = [(KEY_THINGS[t[3]], (float(t[0]), float(t[1]))) for t in m.things if t[3] in KEY_THINGS]
     triggers = {}
     for l in m.lines:
-        if l.special in DOOR_TRIGGERS and l.tag and l.tag not in triggers:
+        if l.tag and l.special and l.special not in NOT_MOVERS and l.special not in LIFT_TRIGGERS                 and l.tag not in triggers:
             triggers[l.tag] = l
     grids: dict = {}
 
@@ -84,6 +99,7 @@ def solve(m: MapData, start: tuple[float, float], max_depth: int = 5, verbose: b
             return steps + [exit_goal]
         if len(steps) >= max_depth:
             continue
+        area = int(g.reachable(pos).sum())
         for color, kpos in keys_avail:
             if color not in keys and g.plan(pos, kpos):
                 q.append((keys | {color}, opened, kpos,
@@ -91,10 +107,13 @@ def solve(m: MapData, start: tuple[float, float], max_depth: int = 5, verbose: b
         for tag, l in triggers.items():
             if tag in opened:
                 continue
-            kind = {"S": "switch", "W": "walk", "G": "shoot"}[DOOR_TRIGGERS[l.special]]
+            kind = {"S": "switch", "W": "walk", "G": "shoot"}[how(l.special)]
             pts, mid_l = _stand_points(l, 40.0 if kind != "shoot" else 200.0)
             for p in pts:
                 if g.sector_at(*p) >= 0 and g.plan(pos, p):
+                    # only worth it if firing the trigger lets the player reach more of the map
+                    if int(grid(keys, opened | {tag}).reachable(p).sum()) <= area:
+                        break
                     label = {"switch": "switch", "walk": "trigger line", "shoot": "switch to shoot"}[kind]
                     q.append((keys, opened | {tag}, p, steps + [Subgoal(kind, label, p, mid_l, tag=tag)]))
                     break
