@@ -2,7 +2,7 @@
 
 Jev plays DOOM E1M1 in real time on a laptop, choosing every move itself.
 
-Jev is [Simple Jev](https://github.com/featherless-ai/simple-jev), an open classifier API from Featherless. It wraps a language model so that, instead of writing text, the model returns a probability for each label in a fixed list. Here the list is 17 DOOM commands. A large model behind the hosted Jev API acts as teacher. A small model behind a local Jev server is fine-tuned to copy it, then plays.
+Jev is [Simple Jev](https://github.com/featherless-ai/simple-jev), an open classifier API from Featherless. It wraps a language model so that, instead of writing text, the model returns a probability for each label in a fixed list. Here the list is 20 DOOM commands. A rule-based expert that reads the same text labels training situations; a small model behind a local Jev server is fine-tuned to copy it, then plays. The full story, including what broke, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Status (2026-10-17): the pipeline works end to end and a distilled local model plays in real time. No model, teacher included, has finished E1M1 yet.
 

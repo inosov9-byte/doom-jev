@@ -13,13 +13,17 @@ Only the decision engine changes between arms. Everything else is fixed by code,
 
 | Arm | Engine | Model | Where | Prompt |
 |---|---|---|---|---|
-| `jev-local` | Jev | Qwen3.5-0.8B fine-tuned on Gemma labels (RFDT LoRA) | laptop GPU | short student prompt it was trained on |
+| `jev-local` | Jev | Qwen3.5-0.8B fine-tuned on the rule-based expert's labels (RFDT LoRA) | laptop GPU | short student prompt it was trained on |
 | `jev-hosted` | Jev | `featherless-ai/Qwen3.6-35B-A3B-classifier` (the model in Featherless's own Doom demo) | Featherless demo API | shared instructions + command descriptions |
 | `jev-hosted-gemma` | Jev | `featherless-ai/gemma-4-26B-A4B-classifier` (our teacher) | Featherless demo API | shared |
 | `haiku` | Claude | `claude-haiku-5-5`, thinking off, effort `low` | Anthropic API | shared |
 | `haiku-think` | Claude | `claude-haiku-5-5`, adaptive thinking, effort `low` | Anthropic API | shared |
+| `rules` | reference | `expert.py`, the teacher, instant decisions | local | same state text, parsed |
+| `rules-lag` | reference | `expert.py` delayed to 0.7 s per decision: what a perfect copy of the teacher could do at local Jev's speed | local | same |
 
 "Shared" = `jev.INSTRUCTIONS` (identical to `prompts/facts.txt`) plus the descriptions in `commands.COMMANDS`, given to every engine word for word. The local student uses its training prompt because that prompt is part of that system.
+
+The teacher changed during the project: hosted Gemma-4-26B labels first, then the rule-based expert, after Gemma died at 26% of the route live while the expert clears E1M1 on every seed. The two `rules` arms make the teacher's ceiling and the cost of latency visible in the same table.
 
 ## Held constant
 
