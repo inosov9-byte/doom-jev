@@ -1,21 +1,20 @@
-"""Plays one Jev command as a short, fixed macro (about 0.3 s of game time).
+"""Plays one Jev command as a fixed macro.
 
-The executor does not choose anything: it replays the macro exactly, then the player
-stands still until Jev's next command arrives.
+The executor does not choose anything: it replays the macro exactly, and a new command
+replaces the running one (moves last about one decision interval, so they rarely end first). When a macro ends before the next command arrives, the
+player stands still.
 """
 from __future__ import annotations
 
+from .commands import FIRE_TICS, MOVE_TICS, TURN_DEG, USE_TICS
 from .env import B, BI, Obs, blank_action
 
-TICS = 10        # length of every macro in game tics (35 tics = 1 s)
-TURN_DEG = {"turn_left": 15, "turn_right": -15, "turn_left_big": 60, "turn_right_big": -60}
-MOVE = {"forward": B.MOVE_FORWARD, "back": B.MOVE_BACKWARD,
-        "strafe_left": B.MOVE_LEFT, "strafe_right": B.MOVE_RIGHT}
+MAX_TURN_PER_TIC = 30.0
+MOVE_BUTTON = {"forward": B.MOVE_FORWARD, "back": B.MOVE_BACKWARD,
+               "strafe_left": B.MOVE_LEFT, "strafe_right": B.MOVE_RIGHT}
 
 
 class Executor:
-    """Plays one command over TICS tics. Weapon auto-switch is the only non-command input."""
-
     def __init__(self):
         self.cmd: str | None = None
         self.left = 0
@@ -23,8 +22,15 @@ class Executor:
 
     def start(self, cmd: str) -> None:
         self.cmd = cmd
-        self.left = TICS
         self.turn_left_deg = float(TURN_DEG.get(cmd, 0))
+        if cmd in TURN_DEG:
+            self.left = int(abs(self.turn_left_deg) // MAX_TURN_PER_TIC) + 2
+        elif cmd in MOVE_BUTTON:
+            self.left = MOVE_TICS
+        elif cmd == "fire":
+            self.left = FIRE_TICS
+        else:
+            self.left = USE_TICS
 
     @property
     def busy(self) -> bool:
@@ -38,13 +44,12 @@ class Executor:
         self.left -= 1
         c = self.cmd
         if c in TURN_DEG:
-            per_tic = TURN_DEG[c] / 3                     # complete the turn in the first 3 tics
             if abs(self.turn_left_deg) > 1e-6:
-                d = per_tic if abs(per_tic) <= abs(self.turn_left_deg) else self.turn_left_deg
+                d = max(-MAX_TURN_PER_TIC, min(MAX_TURN_PER_TIC, self.turn_left_deg))
                 a[BI[B.TURN_LEFT_RIGHT_DELTA]] = -d       # positive delta turns right
                 self.turn_left_deg -= d
-        elif c in MOVE:
-            a[BI[MOVE[c]]] = 1
+        elif c in MOVE_BUTTON:
+            a[BI[MOVE_BUTTON[c]]] = 1
             a[BI[B.SPEED]] = 1
         elif c == "fire":
             a[BI[B.ATTACK]] = 1

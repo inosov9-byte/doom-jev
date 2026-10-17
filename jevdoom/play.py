@@ -153,6 +153,8 @@ def main(argv=None):
 
     g = make_game(args.wad, args.map, args.skill, visible=not args.no_window, timeout_s=args.timeout)
     g.new_episode()
+    for _ in range(10):                      # ViZDoom ignores input for the first 7 tics
+        g.make_action(blank_action())
     exe = Executor()
     brain = Brain(client, perc, make_body, args.min_gap)
     brain.start()

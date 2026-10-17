@@ -71,7 +71,22 @@ class Perception:
         return float(MAX_RAY), "open", nukage
 
     # -- route compass ----------------------------------------------------------
+    def route_bearing(self, obs: Obs) -> float | None:
+        """Bearing the compass would report (positive = left), or None without a route."""
+        t = self._route_target(obs)
+        return None if t is None else obs.bearing_to(*t[0])
+
     def _route_hint(self, obs: Obs) -> str | None:
+        t = self._route_target(obs)
+        if t is None:
+            return None
+        target, left = t
+        if left < 120:     # at the end of the route: point at the switch itself
+            d = obs.dist_to(*self.exit_mid)
+            return f"exit switch {d:.0f} away, {_side(obs.bearing_to(*self.exit_mid))}"
+        return f"{_side(obs.bearing_to(*target))}, {left:.0f} units left"
+
+    def _route_target(self, obs: Obs):
         pos = (obs.x, obs.y)
         if self.route:
             lo, hi = self.idx, min(len(self.route), self.idx + 60)
@@ -90,11 +105,9 @@ class Perception:
                 target = path[j]
                 break
         left = math.dist(pos, path[self.idx]) + path_length(path[self.idx:])
-        if left < 120:     # at the end of the route: point at the switch itself
-            d = obs.dist_to(*self.exit_mid)
-            return f"exit switch {d:.0f} away, {_side(obs.bearing_to(*self.exit_mid))}"
-        b = obs.bearing_to(*target)
-        return f"{_side(b)}, {left:.0f} units left"
+        if left < 120:
+            target = self.exit_mid
+        return target, left
 
     # -- text -----------------------------------------------------------------
     def describe(self, obs: Obs, last_cmd: str | None = None, health_override: float | None = None) -> str:

@@ -21,8 +21,10 @@ from .env import blank_action, make_game, observe, teleport
 from .perception import Perception
 from .wadmap import NavGrid, exit_target, load_map
 
-ROLLOUT_WEIGHTS = {"forward": 4, "turn_left": 2, "turn_right": 2, "turn_left_big": 1, "turn_right_big": 1,
-                   "strafe_left": 1, "strafe_right": 1, "back": 0.5, "fire": 1, "use": 0.5}
+ROLLOUT_WEIGHTS = {"forward": 4, "back": 0.5, "strafe_left": 1, "strafe_right": 1,
+                   "turn_left_15": 1.2, "turn_left_45": 1, "turn_left_90": 0.5,
+                   "turn_right_15": 1.2, "turn_right_45": 1, "turn_right_90": 0.5,
+                   "turn_around": 0.3, "fire": 1, "use": 0.5}
 
 
 def free_cells(grid: NavGrid):
@@ -42,6 +44,7 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--prefix", default="s")
     ap.add_argument("--route-from", type=float, default=0.0, help="sample route anchors from this fraction of the route onward")
+    ap.add_argument("--heading-sd", type=float, default=None, help="route anchors: Gaussian heading noise in degrees (default: mixed)")
     ap.add_argument("--kinds", default="0.65,0.25,0.10", help="weights for route,monster,random anchors")
     args = ap.parse_args(argv)
     rng = random.Random(args.seed)
@@ -68,7 +71,7 @@ def main(argv=None):
         for a in range(args.anchors):
             if a % 60 == 0:                                   # fresh monsters every 60 anchors
                 g.new_episode()
-                for _ in range(4):
+                for _ in range(10):
                     g.make_action(blank_action())
                 g.send_game_command("god")
                 if rng.random() < 0.4:
@@ -85,7 +88,9 @@ def main(argv=None):
                 heading = math.degrees(math.atan2(y1 - y0, x1 - x0))
                 x, y = x0 + rng.uniform(-32, 32), y0 + rng.uniform(-32, 32)
                 r = rng.random()
-                angle = heading + (rng.gauss(0, 25) if r < 0.5 else rng.gauss(0, 80) if r < 0.8 else rng.uniform(-180, 180))
+                if args.heading_sd is not None:
+                    r = -1.0
+                angle = heading + rng.gauss(0, args.heading_sd) if r < 0 else heading + (rng.gauss(0, 25) if r < 0.5 else rng.gauss(0, 80) if r < 0.8 else rng.uniform(-180, 180))
             elif kind == "monster":
                 mo = rng.choice(live)
                 near = [p for p in route if 150 < math.dist(p, (mo.x, mo.y)) < 900]
@@ -102,6 +107,14 @@ def main(argv=None):
             for _ in range(2):
                 g.make_action(blank_action())
             perc.reset()
+            if kind == "route" and args.heading_sd is not None:
+                # face the compass target itself, plus small noise
+                o = observe(g, tic)
+                b = perc.route_bearing(o)
+                if b is not None:
+                    teleport(g, o.x, o.y, (o.angle + b + rng.gauss(0, args.heading_sd)) % 360)
+                    g.make_action(blank_action())
+                perc.reset()
             hp = rng.randint(12, 100) if rng.random() < 0.5 else None
             last = None
             for k in range(args.rollout + 1):
