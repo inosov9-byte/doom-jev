@@ -37,6 +37,7 @@ class Perception:
         self.idx = 0
         self.prev: Obs | None = None
         self.prev_cmd: str | None = None
+        self.door_ceil_prev: dict[int, float] = {}   # door sector -> ceiling height at the previous description
 
     # -- raycasting -----------------------------------------------------------
     def ray(self, obs: Obs, rel_deg: float) -> tuple[float, str, float | None]:
@@ -62,8 +63,16 @@ class Perception:
             cf, cc = obs.heights.get(cur, (self.m.floor[cur], self.m.ceil[cur]))
             nf, nc = obs.heights.get(nxt, (self.m.floor[nxt], self.m.ceil[nxt]))
             if min(cc, nc) - max(cf, nf) < PLAYER_HEIGHT:
-                kind = "door (closed)" if (self.special[i] in DOOR_SPECIALS or nxt in self.m.door_sectors) else "wall"
-                return d, kind, nukage
+                if self.special[i] in DOOR_SPECIALS or nxt in self.m.door_sectors:
+                    door = nxt if nxt in self.m.door_sectors else cur
+                    before = self.door_ceil_prev.get(door)
+                    now = obs.heights.get(door, (0, 0))[1]
+                    state = "closed" if before is None or abs(now - before) < 1 else ("opening" if now > before else "closing")
+                    if state == "opening":            # Doom doors rise 2 units per tic
+                        eta = max(0.0, (self.grid.ceil_s[door] - now) / 2 / 35)
+                        state = f"opening, fully open in about {max(0.5, round(eta * 2) / 2):g} s"
+                    return d, f"door ({state})", nukage
+                return d, "wall", nukage
             if nf - cf > MAX_STEP:
                 return d, "ledge too high to climb", nukage
             if nukage is None and self.m.special[nxt] in DAMAGE_SECTORS:
@@ -158,10 +167,12 @@ class Perception:
                 note += " (blocked)"
             parts.append(note + (f", took {dmg:.0f} damage." if dmg > 0 else "."))
         self.prev = obs
+        self.door_ceil_prev = {sec: obs.heights[sec][1] for sec in self.m.door_sectors if sec in obs.heights}
         return " ".join(parts)
 
     def reset(self) -> None:
         self.route, self.idx, self.prev = None, 0, None
+        self.door_ceil_prev = {}
 
 
 def _side(b: float) -> str:

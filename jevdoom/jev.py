@@ -13,13 +13,16 @@ import urllib.request
 from .commands import COMMANDS
 
 HOSTED_URL = "https://simple-jev-demo-api.featherless.ai"
-TEACHER_MODEL = "featherless-ai/Qwen3.6-35B-A3B-classifier"
+# Teacher chosen with probe.py (2026-10-17): gemma-4-26B-A4B scored 0.90 vs 0.50 for
+# Qwen3.6-35B-A3B, which ignores enemies in view and follows the route compass instead.
+TEACHER_MODEL = "featherless-ai/gemma-4-26B-A4B-classifier"
 LOCAL_URL = "http://127.0.0.1:8012"
 
-INSTRUCTIONS = ("You control the DOOM player in real time. Goal: survive and reach the level exit. "
-                "Game facts: use only works on a door or switch within use reach straight ahead; "
-                "fire only hits what is in the crosshair; nukage floor drains health. "
-                "Pick the single best next command.")
+INSTRUCTIONS = ('You control the DOOM player in real time. Goal: survive and reach the level exit. Game facts: '
+                'angles in the state are measured from where you face; "N deg left" means turn left by about N degrees '
+                'to face it. Enemies in view shoot you. fire only hits what is in the crosshair. use only works on a '
+                'door or switch within use reach straight ahead. Nukage floor drains health. '
+                'Pick the single best next command.')
 STUDENT_INSTRUCTIONS = "DOOM player. Next command?"
 
 

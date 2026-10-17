@@ -46,6 +46,9 @@ class Brain(threading.Thread):
         self.have_obs = threading.Event()
         self.answers: queue.Queue = queue.Queue()
         self.stop = threading.Event()
+        self.applied = threading.Event()      # set by the game loop once the last command took effect
+        self.applied.set()
+        self.issued = 0                       # sequence number of the latest answer with a command
         self.last_cmd: str | None = None
 
     def offer(self, obs):
@@ -61,6 +64,7 @@ class Brain(threading.Thread):
                 obs = self.latest
             if obs is None:
                 continue
+            self.applied.wait(1.5)                  # never decide on a view that predates the last command
             wait = self.min_gap - (time.monotonic() - last_start)
             if wait > 0:
                 time.sleep(wait)
@@ -75,10 +79,12 @@ class Brain(threading.Thread):
                 err = None
             except Exception as e:
                 ans, latency, err = None, time.perf_counter() - t0, f"{type(e).__name__}: {e}"
-            self.answers.put({"obs_tic": obs.tic, "state": state, "answer": ans, "latency": latency,
-                              "perception_s": t_perc, "error": err})
             if ans is not None:
+                self.issued += 1            # bump first: the game loop compares against it before clear
+                self.applied.clear()
                 self.last_cmd = ans["choice"]
+            self.answers.put({"obs_tic": obs.tic, "state": state, "answer": ans, "latency": latency,
+                              "perception_s": t_perc, "error": err, "seq": self.issued})
             if err:
                 time.sleep(1.0)
 
@@ -169,6 +175,7 @@ def main(argv=None):
 
     log = (run_dir / "decisions.jsonl").open("w", encoding="utf-8")
     tic, n_dec, lat, best_left = 0, 0, [], total_route
+    exe_seq = 0
     info = {"model": name, "cmd": None, "probs": {}, "state": "", "lat": 0.0, "n": 0, "left": total_route}
     t_start = time.perf_counter()
     outcome = "timeout"
@@ -191,11 +198,14 @@ def main(argv=None):
                     a = d["answer"]
                     rec.update(choice=a["choice"], confidence=a["confidence"], probabilities=a["probabilities"])
                     exe.start(a["choice"])
+                    exe_seq = d["seq"]
                     lat.append(d["latency"])
                     info.update(cmd=a["choice"], probs=a["probabilities"], state=d["state"], lat=d["latency"], n=n_dec)
                 log.write(json.dumps(rec) + "\n")
             g.make_action(exe.step(obs), 1)
             tic += 1
+            if exe_seq == brain.issued and exe.settled:
+                brain.applied.set()
             if perc.route:
                 left = math.dist((obs.x, obs.y), perc.route[perc.idx]) + path_length(perc.route[perc.idx:])
                 best_left = min(best_left, left)
