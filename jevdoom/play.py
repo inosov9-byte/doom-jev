@@ -112,8 +112,10 @@ def draw_panel(frame: np.ndarray, info: dict) -> np.ndarray:
             p = probs.get(k, 0)
             cv2.rectangle(panel, (150, y - 12), (150 + int(230 * p), y + 2), (80, 160, 255), -1)
             put(f"{k:15s} {p:4.2f}", 0.42)
-    else:
+    elif info.get("cmd"):
         put("(no probabilities: generative engine)", 0.42, (150, 150, 150))
+    else:
+        put("(waiting for the first decision)", 0.42, (150, 150, 150))
     y += 8
     words, line = (info.get("state") or "").split(), ""
     for w in words:
