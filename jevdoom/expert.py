@@ -4,7 +4,8 @@ Used as the teacher for distillation (instant, free, consistent labels for any s
 including states the student reaches on its own) and as a reference arm in live runs.
 It never runs inside a Jev or Haiku arm.
 
-Priorities: press the exit switch > fight enemies within range (aim, shoot, dodge when hit) >
+Priorities: press the exit switch > fight close enemies (aim, shoot, dodge when hit; skipped
+near the exit or at low health, where running is safer) >
 face an attacker shooting from out of view > pick up ammo when out / health when low >
 open a closed door on the way > turn toward the route > get unstuck > walk forward.
 """
@@ -14,7 +15,7 @@ import re
 
 STEPS = (5, 15, 30, 45, 90)
 USE_REACH = 64
-ENGAGE = 750          # pistol/shotgun are not worth firing beyond this
+ENGAGE = 250          # fight only close enemies; otherwise keep running the route (lag-robust: a moving player is hard to hit)
 FIST = 90
 AMMO_ITEMS = ("ammo clip", "box of bullets", "shells", "box of shells", "shotgun")
 HEALTH_ITEMS = ("stimpack", "medikit", "health bonus")
@@ -37,8 +38,8 @@ def parse_state(s: str) -> dict:
     f: dict = {"enemies": [], "pickups": [], "rays": {}, "route": None, "route_left": None, "exit_near": None,
                "attacker": None, "blocked": False, "last": None, "damage": 0, "health": 100,
                "bullets": 0, "shells": 0, "weapon": "pistol"}
-    m = re.search(r"Health (\d+)", s)
-    f["health"] = int(m.group(1)) if m else 100
+    m = re.search(r"Health (\d+), armor (\d+)", s)
+    f["health"], f["armor"] = (int(m.group(1)), int(m.group(2))) if m else (100, 0)
     m = re.search(r"Weapon: (\w+); (\d+) bullets, (\d+) shells", s)
     if m:
         f["weapon"], f["bullets"], f["shells"] = m.group(1), int(m.group(2)), int(m.group(3))
@@ -68,6 +69,8 @@ def parse_state(s: str) -> dict:
         m = re.search(r"Route to exit: ([^,]+), (\d+) units left", s)
         if m:
             f["route"], f["route_left"] = _angle(m.group(1)), float(m.group(2))
+    m = re.search(r"Toxic nukage floor \d+ units (ahead|30 left|30 right)", s)
+    f["nukage"] = m.group(1) if m else None
     m = re.search(r"Being shot from out of view, ([^.]+)\.", s)
     if m:
         f["attacker"] = _angle(m.group(1))
@@ -88,6 +91,11 @@ def turn_toward(angle: float) -> str:
 
 
 def _open_side(f: dict, prefix: str = "") -> str:
+    """Side with more room, never the side the text reports nukage on."""
+    if f.get("nukage") == "30 left":
+        return prefix + "right"
+    if f.get("nukage") == "30 right":
+        return prefix + "left"
     left = min(f["rays"].get("30 left", (0.0, ""))[0], f["rays"].get("60 left", (0.0, ""))[0])
     right = min(f["rays"].get("30 right", (0.0, ""))[0], f["rays"].get("60 right", (0.0, ""))[0])
     return prefix + ("left" if left >= right else "right")
@@ -113,8 +121,10 @@ def decide(state: str) -> str:
             return turn_toward(a)
         return "use" if d <= USE_REACH else ("forward_short" if d < 200 else "forward")
 
-    # 2. enemies within range (fist range when out of ammo)
-    reach = ENGAGE if has_ammo else FIST
+    # 2. enemies within range (fist range when out of ammo). Near the exit or at low health,
+    #    run instead: the switch ends the level, and a fight at 0.7 s per decision is a bad trade.
+    sprint = (f["route_left"] is not None and f["route_left"] < 700) or f["health"] < 30
+    reach = (100 if sprint else ENGAGE) if has_ammo else FIST
     threats = [e for e in f["enemies"] if e["dist"] <= reach and e["angle"] is not None]
     if threats:
         t = min(threats, key=lambda e: e["dist"])
@@ -125,7 +135,7 @@ def decide(state: str) -> str:
         return turn_toward(t["angle"])
 
     # 3. shot from out of view: face the attacker if we can fight back
-    if f["attacker"] is not None and has_ammo:
+    if f["attacker"] is not None and has_ammo and not sprint:
         return turn_toward(f["attacker"])
 
     # 4. supplies: ammo when out, health when low
