@@ -15,7 +15,8 @@ import math
 import random
 from pathlib import Path
 
-from .commands import COMMAND_IDS, Executor
+from .commands import COMMAND_IDS
+from .executor import Executor
 from .env import blank_action, make_game, observe, teleport
 from .perception import Perception
 from .wadmap import NavGrid, exit_target, load_map

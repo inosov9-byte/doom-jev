@@ -24,7 +24,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .commands import COMMAND_IDS, Executor
+from .commands import COMMAND_IDS
+from .executor import Executor
 from .env import blank_action, make_game, observe
 from .jev import HOSTED_URL, TEACHER_MODEL, JevClient, student_request, teacher_request
 from .perception import Perception
