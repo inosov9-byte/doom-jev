@@ -2,10 +2,10 @@
 
 ## Question
 
-With the same game, the same perception text, the same 13 commands and the same real-time loop, how does a Jev classifier compare with Claude Haiku 5.5 at playing DOOM E1M1?
+With the same game, the same perception text, the same 17 commands and the same real-time loop, how does a Jev classifier compare with Claude Haiku 5.5 at playing DOOM E1M1?
 
-- **Jev** (Featherless Simple Jev): one forward pass of an open model; the answer is read from the next-token scores of the 13 labels. Returns a probability per command. Runs hosted or locally.
-- **Haiku** (`claude-haiku-5-5`): a generative model behind Anthropic's API. Writes its answer as JSON constrained to the 13 command ids (structured outputs). No probabilities.
+- **Jev** (Featherless Simple Jev): one forward pass of an open model; the answer is read from the next-token scores of the 17 labels. Returns a probability per command. Runs hosted or locally.
+- **Haiku** (`claude-haiku-5-5`): a generative model behind Anthropic's API. Writes its answer as JSON constrained to the 17 command ids (structured outputs). No probabilities.
 
 Only the decision engine changes between arms. Everything else is fixed by code, not by convention.
 
@@ -30,7 +30,7 @@ Only the decision engine changes between arms. Everything else is fixed by code,
 | Clock | real time, 35 tics/s, never paused | `play.py` |
 | Decision loop | serial; next request waits until the last command took effect | `play.Brain` |
 | Perception | `perception.py` at the run's commit, compass on | git commit in `summary.json` |
-| Commands | 13 labels, fixed macros | `commands.py`, `executor.py` |
+| Commands | 17 labels, fixed macros | `commands.py`, `executor.py` |
 | Episode limit | 300 s of game time | `--timeout` |
 | Hosted Jev rate | ≥ 0.55 s between request starts (demo limit 2/s) | `--min-gap` |
 
@@ -50,7 +50,7 @@ Per run, from `summary.json` and `decisions.jsonl`:
 | `errors` | failed engine calls (player stands still) |
 | `cost_usd` | Haiku: tokens x list price; Jev: 0 (free demo / local) |
 
-Offline, no time pressure: the 68-situation probe (`probe.py`) per arm, to separate decision quality from speed.
+Offline, no time pressure: the 60-situation probe (`probe.py`) per arm, to separate decision quality from speed.
 
 Primary comparison: median `route_progress_pct` and exit rate per arm over the same seeds. Secondary: survival time, kills, latency, cost per run.
 

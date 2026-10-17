@@ -22,8 +22,8 @@ from .perception import Perception
 from .wadmap import NavGrid, exit_target, load_map
 
 ROLLOUT_WEIGHTS = {"forward": 4, "back": 0.5, "strafe_left": 1, "strafe_right": 1,
-                   "turn_left_15": 1.2, "turn_left_45": 1, "turn_left_90": 0.5,
-                   "turn_right_15": 1.2, "turn_right_45": 1, "turn_right_90": 0.5,
+                   "turn_left_5": 0.6, "turn_left_15": 1, "turn_left_30": 1, "turn_left_45": 0.8, "turn_left_90": 0.5,
+                   "turn_right_5": 0.6, "turn_right_15": 1, "turn_right_30": 1, "turn_right_45": 0.8, "turn_right_90": 0.5,
                    "turn_around": 0.3, "fire": 1, "use": 0.5}
 
 

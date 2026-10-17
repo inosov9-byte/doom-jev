@@ -20,12 +20,16 @@ import time
 from .commands import COMMANDS
 from .jev import HOSTED_URL, INSTRUCTIONS, JevClient
 
-TURNS = (15, 45, 90)
+TURNS = (5, 15, 30, 45, 90)
 
 
 def side(b: float) -> str:
     if abs(b) < 7.5:
         return "straight ahead"
+    return f"{abs(b):.0f} deg {'left' if b > 0 else 'right'}"
+
+
+def exact(b: float) -> str:
     return f"{abs(b):.0f} deg {'left' if b > 0 else 'right'}"
 
 
@@ -53,12 +57,16 @@ def make_cases(seed: int = 7):
     cases = []
     kinds = ["zombieman", "imp", "shotgun guy"]
     for b in (12, 20, 30, 40, 55, 70, -12, -20, -30, -40, -55, -70):          # enemy, route agrees with nothing
-        s = (f"{vitals(rng)} Enemies in view: {rng.choice(kinds)} {rng.randint(150, 700)} away, {side(b)}. "
+        s = (f"{vitals(rng)} Enemies in view: {rng.choice(kinds)} {rng.randint(150, 700)} away, {exact(b)}. "
              f"{obstacles(rng)} Route to exit: straight ahead, {rng.randint(900, 4000)} units left.")
         cases.append(("aim at enemy", s, turn_credit(b)))
+    for b in (6, 9, -6, -9):                                                 # fine aim at a far enemy
+        s = (f"{vitals(rng)} Enemies in view: {rng.choice(kinds)} {rng.randint(450, 800)} away, {exact(b)}. "
+             f"{obstacles(rng)} Route to exit: straight ahead, {rng.randint(900, 4000)} units left.")
+        cases.append(("fine aim", s, turn_credit(b)))
     for b in (25, 40, -25, -40, 60, -60):                                    # enemy one side, route the other
         r = -b + rng.choice((-10, 10))
-        s = (f"{vitals(rng)} Enemies in view: {rng.choice(kinds)} {rng.randint(150, 600)} away, {side(b)}. "
+        s = (f"{vitals(rng)} Enemies in view: {rng.choice(kinds)} {rng.randint(150, 600)} away, {exact(b)}. "
              f"{obstacles(rng)} Route to exit: {side(r)}, {rng.randint(900, 4000)} units left.")
         cases.append(("aim, route conflicts", s, turn_credit(b)))
     for _ in range(8):                                                       # enemy in crosshair

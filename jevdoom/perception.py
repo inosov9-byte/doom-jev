@@ -131,7 +131,7 @@ class Perception:
             for m in vis:
                 d, b = obs.dist_to(m.x, m.y), obs.bearing_to(m.x, m.y)
                 tol = max(3.0, math.degrees(math.atan2(16, max(d, 1))))
-                aim = "in the crosshair" if abs(b) <= tol else _side(b)
+                aim = "in the crosshair" if abs(b) <= tol else _side(b, ahead=0.5)   # exact angle for aiming
                 enemies.append(f"{MONSTER_NAMES.get(m.name, m.name)} {d:.0f} away, {aim}")
             parts.append("Enemies in view: " + "; ".join(enemies) + ".")
         else:
@@ -187,8 +187,10 @@ class Perception:
         self.door_ceil_prev = {}
 
 
-def _side(b: float) -> str:
-    if abs(b) < 7.5:      # half of the smallest turn command
+def _side(b: float, ahead: float = 7.5) -> str:
+    """Angle in words. Within `ahead` degrees counts as straight ahead (default: half a 15 degree turn,
+    fine for walking; enemies use an exact angle so the 5 degree turns can aim)."""
+    if abs(b) < ahead:
         return "straight ahead"
     if abs(b) > 165:
         return "behind"

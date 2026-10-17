@@ -2,7 +2,7 @@
 
 Jev plays DOOM E1M1 in real time on a laptop, choosing every move itself.
 
-Jev is [Simple Jev](https://github.com/featherless-ai/simple-jev), an open classifier API from Featherless. It wraps a language model so that, instead of writing text, the model returns a probability for each label in a fixed list. Here the list is 13 DOOM commands. A large model behind the hosted Jev API acts as teacher. A small model behind a local Jev server is fine-tuned to copy it, then plays.
+Jev is [Simple Jev](https://github.com/featherless-ai/simple-jev), an open classifier API from Featherless. It wraps a language model so that, instead of writing text, the model returns a probability for each label in a fixed list. Here the list is 17 DOOM commands. A large model behind the hosted Jev API acts as teacher. A small model behind a local Jev server is fine-tuned to copy it, then plays.
 
 Status (2026-10-17): the pipeline works end to end and a distilled local model plays in real time. No model, teacher included, has finished E1M1 yet.
 
@@ -23,7 +23,7 @@ Both sides use the same Jev server code, prompt format and labels. Gemma never r
 
 ```
 ViZDoom E1M1 --teleport + random commands--> recorded situations (text)
-        --> hosted Jev (Gemma-4-26B): probabilities over 13 commands
+        --> hosted Jev (Gemma-4-26B): probabilities over 17 commands
         --> RFDT (Simple Jev's trainer): LoRA on Qwen3.5-0.8B to match them
         --> merged local model
 ```
@@ -38,7 +38,7 @@ perception.py   text: health, ammo, enemies in view (distance, angle, in crossha
    |            raycast obstacles (wall / door state / ledge / exit switch), nukage,
    |            route compass to the exit, off-screen attacker direction, last command result
    v
-local Jev       one choice over 13 commands
+local Jev       one choice over 17 commands
    v
 executor.py     plays the command as a fixed macro; the next command cancels it
 ```
@@ -59,13 +59,13 @@ Featherless's own [web DOOM demo](https://featherless.ai/simple-jev/cool-demo/do
 
 ## Commands
 
-`forward`, `back`, `strafe_left`, `strafe_right` (20 tics, about 0.57 s; ~300 units forward or back and ~250 strafing, measured including the slide), `turn_left_15/45/90`, `turn_right_15/45/90`, `turn_around` (exact angles), `fire`, `use`.
+`forward`, `back`, `strafe_left`, `strafe_right` (20 tics, about 0.57 s; ~300 units forward or back and ~250 strafing, measured including the slide), `turn_left_5/15/30/45/90`, `turn_right_5/15/30/45/90`, `turn_around` (exact angles; 5 and 30 were added after measuring aim error: with 15/45/90 only, 38% of aiming turns could not get within 7 degrees of the target), `fire`, `use`.
 
 Turn amounts are in the label because a classifier picks labels and cannot output numbers. Moves have one length, close to the decision interval, because Doom momentum makes long timed moves overshoot.
 
 ## Choosing the teacher
 
-`probe.py` scores teachers on 68 synthetic situations with unambiguous answers (aim, fire, follow route, open door, press exit, get unstuck). Wrong-direction turns score zero.
+`probe.py` scores teachers on 56 synthetic situations with unambiguous answers (aim, fire, follow route, open door, press exit, get unstuck; 60 since fine-aim cases were added). Wrong-direction turns score zero.
 
 | Teacher (hosted) | Instructions | Score | Aim at enemy |
 |---|---|---|---|

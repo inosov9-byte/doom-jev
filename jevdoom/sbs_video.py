@@ -104,7 +104,7 @@ def compose(a: Run, b: Run, t_frame: int, layout: str, title: str, subtitle: str
     if layout == "feed":
         d.text((40, H - 92), "Jev: a classifier, one pass over the state, reads a probability per command.",
                font=font(FONT, 21), fill=(154, 163, 178))
-        d.text((40, H - 62), "Haiku: a generative model, writes its pick as JSON. Same state text, same 13 commands.",
+        d.text((40, H - 62), "Haiku: a generative model, writes its pick as JSON. Same state text, same 17 commands.",
                font=font(FONT, 21), fill=(154, 163, 178))
     t = t_frame / FPS
     clock = f"{int(t // 60)}:{t % 60:04.1f}  real time"
@@ -117,7 +117,7 @@ def end_card(a: Run, b: Run, layout: str) -> np.ndarray:
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
     y = H // 2 - 220
-    d.text((60, y), "Same game, perception and 13 commands", font=font(FONT_B, 40), fill=(235, 238, 243))
+    d.text((60, y), "Same game, perception and 17 commands", font=font(FONT_B, 40), fill=(235, 238, 243))
     d.text((60, y + 56), "The decision engine is the only difference.", font=font(FONT, 30), fill=(154, 163, 178))
     y += 150
     for key, run in (("a", a), ("b", b)):

@@ -93,7 +93,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--arms", nargs="+", default=ARMS, choices=ARMS)
     ap.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3, 4, 5])
-    ap.add_argument("--probe", action="store_true", help="offline 68-situation probe per arm instead of live runs")
+    ap.add_argument("--probe", action="store_true", help="offline 60-situation probe per arm instead of live runs")
     ap.add_argument("--dry-run", action="store_true", help="mock engines with each arm's latency profile; free")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--local-url", default=LOCAL_URL)
