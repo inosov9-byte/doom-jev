@@ -3,3 +3,4 @@ __pycache__/
 runs/
 data/
 models/
+_vizdoom.ini
