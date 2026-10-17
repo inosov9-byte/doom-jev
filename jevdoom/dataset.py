@@ -22,6 +22,7 @@ def main(argv=None):
     ap.add_argument("--labels", nargs="+", default=[])
     ap.add_argument("--expert", nargs="+", default=[], help="state files to label with expert.py")
     ap.add_argument("--max-per-file", type=int, default=0, help="subsample each expert file to at most N rows")
+    ap.add_argument("--soft", action="store_true", help="expert labels as distributions (expert.decide_soft)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--full-prompt", action="store_true", help="train on the teacher-style prompt instead of the short one")
     ap.add_argument("--min-prob", type=float, default=1e-4, help="floor for soft targets before renormalising")
@@ -40,7 +41,7 @@ def main(argv=None):
                        "provenance": {"teacher": r["teacher"], "teacher_choice": r["choice"]}}
                 f.write(json.dumps(rec) + "\n")
                 n += 1
-        from .expert import decide
+        from .expert import decide, decide_soft
         import random
         rng = random.Random(0)
         for path in args.expert:
@@ -49,10 +50,11 @@ def main(argv=None):
                 rows = rng.sample(rows, args.max_per_file)
             for i, r in enumerate(rows):
                 choice = decide(r["state"])
+                target = {"probabilities": decide_soft(r["state"])} if args.soft else {"answer": choice}
                 rid = r.get("id") or f"{Path(path).parent.name}-{i:05d}"
                 rec = {"id": rid, "group_id": r.get("group_id") or rid,
                        "request": student_request(r["state"], full_prompt=args.full_prompt),
-                       "targets": {"cmd": {"answer": choice}},
+                       "targets": {"cmd": target},
                        "provenance": {"teacher": "expert.py", "source": str(path)}}
                 f.write(json.dumps(rec) + "\n")
                 n += 1

@@ -81,8 +81,12 @@ def parse_state(s: str) -> dict:
     return f
 
 
+_last_turn_angle: list[float | None] = [None]     # angle behind the most recent turn decision (for soft labels)
+
+
 def turn_toward(angle: float) -> str:
     """Nearest available turn for a signed angle (positive = left)."""
+    _last_turn_angle[0] = angle
     if abs(angle) > 135:
         return "turn_around"
     side = "left" if angle > 0 else "right"
@@ -165,3 +169,24 @@ def decide(state: str) -> str:
         return _open_side(f, "strafe_")
 
     return "forward" if ahead[0] > 200 else "forward_short"
+
+
+def decide_soft(state: str, smoothing: float = 0.05, temperature: float = 6.0) -> dict[str, float]:
+    """The expert's choice as a distribution: turns share probability with neighbouring turn sizes
+    by how close each size is to the target angle; every command keeps a small floor."""
+    import math
+    from .commands import COMMAND_IDS
+    _last_turn_angle[0] = None
+    choice = decide(state)
+    p = {c: 0.0 for c in COMMAND_IDS}
+    a = _last_turn_angle[0]
+    if choice.startswith("turn_") and choice != "turn_around" and a is not None:
+        side = "left" if a > 0 else "right"
+        w = {f"turn_{side}_{st}": math.exp(-abs(abs(a) - st) / temperature) for st in STEPS}
+        z = sum(w.values())
+        for k, v in w.items():
+            p[k] = v / z
+    else:
+        p[choice] = 1.0
+    n = len(COMMAND_IDS)
+    return {k: (1 - smoothing) * v + smoothing / n for k, v in p.items()}
