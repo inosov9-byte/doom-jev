@@ -8,15 +8,30 @@ See EXPERIMENT.md for the arms.
 from __future__ import annotations
 
 import json
+import os
 import random
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from .commands import COMMAND_IDS, COMMANDS
 from .jev import HOSTED_URL, INSTRUCTIONS, LOCAL_URL, JevClient, student_request, teacher_request
 
 # Anthropic list prices, USD per million tokens (claude-api skill table, cached 2026-10-06)
 PRICES = {"claude-haiku-5-5": (0.10, 0.50)}
+
+
+ENV_FILE = Path(os.environ.get("JEVDOOM_ENV", r"C:	mp\jev-doom\.env"))   # outside the repo and OneDrive
+
+
+def load_credentials() -> None:
+    """Copy ANTHROPIC_* lines from ENV_FILE into the environment if not already set. Never prints values."""
+    if not ENV_FILE.exists():
+        return
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        k, sep, v = line.strip().partition("=")
+        if sep and k.startswith("ANTHROPIC_") and not os.environ.get(k):
+            os.environ[k] = v.strip().strip('"')
 
 
 @dataclass
@@ -60,6 +75,7 @@ class HaikuEngine(Engine):
 
     def __init__(self, name: str, model: str = "claude-haiku-5-5", thinking: bool = False, effort: str = "low"):
         import anthropic                     # imported here so Jev-only runs need no SDK
+        load_credentials()
         self.name, self.model, self.thinking, self.effort = name, model, thinking, effort
         self.client = anthropic.Anthropic(max_retries=2, timeout=20.0)
         options = "\n".join(f"- {k}" + (f": {v}" if v else "") for k, v in COMMANDS.items())

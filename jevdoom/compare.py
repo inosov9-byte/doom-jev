@@ -19,7 +19,7 @@ import statistics
 import urllib.request
 from pathlib import Path
 
-from .engines import ARMS, make_engine
+from .engines import ARMS, load_credentials, make_engine
 from .jev import LOCAL_URL
 from .play import git_commit, run
 from .probe import make_cases, score_decide
@@ -38,13 +38,15 @@ def preflight(arms: list[str], local_url: str, dry_run: bool) -> list[str]:
         except OSError as e:
             problems.append(f"jev-local: no server at {local_url} ({e}); start scripts/serve.ps1")
     if any(a.startswith("haiku") for a in arms):
+        load_credentials()
         try:
             import anthropic  # noqa: F401
         except ImportError:
             problems.append("haiku: anthropic SDK not installed in this venv")
         if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
                 or os.environ.get("ANTHROPIC_PROFILE") or Path.home().joinpath(".config", "anthropic").exists()):
-            problems.append("haiku: no Anthropic credentials (set ANTHROPIC_API_KEY or run `ant auth login`)")
+            problems.append("haiku: no Anthropic credentials (put ANTHROPIC_API_KEY=... in C:\tmp\jev-doom\.env, "
+                            "set the env var, or run `ant auth login`)")
     return problems
 
 
