@@ -11,6 +11,7 @@ import math
 import numpy as np
 
 from .env import MONSTER_NAMES, PICKUP_NAMES, WEAPON_NAMES, Obs
+from .progression import DOOR_TRIGGERS, KEY_DOORS, KEY_THINGS, LIFT_TRIGGERS, Subgoal
 from .wadmap import DAMAGE_SECTORS, DOOR_SPECIALS, EXIT_SPECIALS, MAX_STEP, PLAYER_HEIGHT, NavGrid, exit_target, path_length
 
 RAYS = [("ahead", 0), ("30 left", 30), ("60 left", 60), ("30 right", -30), ("60 right", -60), ("behind", 180)]
@@ -19,7 +20,10 @@ USE_RANGE = 64           # Doom use reach in map units
 
 
 class Perception:
-    def __init__(self, grid: NavGrid, compass: bool = True):
+    def __init__(self, grid: NavGrid, compass: bool = True, goals: list[Subgoal] | None = None,
+                 stage_grids: list[NavGrid] | None = None):
+        """goals/stage_grids: level progression (progression.py). Without them the only goal is the
+        exit and the text is exactly the single-level E1M1 text."""
         self.grid = grid
         self.m = grid.m
         self.compass = compass
@@ -33,6 +37,15 @@ class Perception:
         self.solid = np.array([l.back == -1 or bool(l.flags & 1) for l in L])
         self.special = np.array([l.special for l in L])
         self.stand, self.exit_mid, _ = exit_target(self.m)
+        self.goals = goals or [Subgoal("exit", "exit", self.stand, self.exit_mid)]
+        self.stage_grids = stage_grids or [grid] * len(self.goals)
+        self.stage = 0
+        self.map_keys = {KEY_THINGS[t[3]] for t in self.m.things if t[3] in KEY_THINGS}
+        S = {sp for sp, how in {**DOOR_TRIGGERS, **LIFT_TRIGGERS}.items() if how == "S"}
+        G = {sp for sp, how in DOOR_TRIGGERS.items() if how == "G"}
+        self.switch_kind = {i: ("switch" if l.special in S else "switch to shoot")
+                            for i, l in enumerate(L) if l.special in S | G}
+        self.locked = {i: KEY_DOORS[l.special] for i, l in enumerate(L) if l.special in KEY_DOORS}
         self.route: list | None = None
         self.idx = 0
         self.prev: Obs | None = None
@@ -55,6 +68,10 @@ class Perception:
             d = float(t[i])
             if self.special[i] in EXIT_SPECIALS:
                 return d, "exit switch", nukage
+            if i in self.switch_kind and self.solid[i]:
+                return d, self.switch_kind[i], nukage
+            if i in self.locked and self.locked[i] not in self.keys_held(obs):
+                return d, f"door (locked, needs {self.locked[i]} key)", nukage
             if self.solid[i]:
                 return d, "wall", nukage
             # den < 0: the ray goes from the line's right (front) side to its left (back) side
@@ -80,6 +97,28 @@ class Perception:
         return float(MAX_RAY), "open", nukage
 
     # -- route compass ----------------------------------------------------------
+    def keys_held(self, obs: Obs) -> set[str]:
+        return self.map_keys - obs.keys_present
+
+    @property
+    def goal(self) -> Subgoal:
+        return self.goals[min(self.stage, len(self.goals) - 1)]
+
+    def _advance(self, obs: Obs) -> None:
+        """Move to the next subgoal once the current one is done (key held, tagged sector moved)."""
+        while self.stage < len(self.goals) - 1:
+            g = self.goal
+            if g.kind == "key":
+                done = g.color in self.keys_held(obs)
+            else:
+                done = any(abs(obs.heights.get(i, (f, c))[0] - f) > 4 or abs(obs.heights.get(i, (f, c))[1] - c) > 4
+                           for i, (f, c, t) in enumerate(zip(self.m.floor, self.m.ceil, self.m.sector_tag))
+                           if t == g.tag)
+            if not done:
+                return
+            self.stage += 1
+            self.route, self.idx = None, 0
+
     def route_bearing(self, obs: Obs) -> float | None:
         """Bearing the compass would report (positive = left), or None without a route."""
         t = self._route_target(obs)
@@ -90,9 +129,11 @@ class Perception:
         if t is None:
             return None
         target, left = t
-        if left < 120:     # at the end of the route: point at the switch itself
-            d = obs.dist_to(*self.exit_mid)
-            return f"exit switch {d:.0f} away, {_side(obs.bearing_to(*self.exit_mid))}"
+        g = self.goal
+        if left < 120:     # at the end of the route: point at the goal itself
+            d = obs.dist_to(*g.target)
+            name = "exit switch" if g.kind == "exit" else g.label
+            return f"{name} {d:.0f} away, {_side(obs.bearing_to(*g.target))}"
         return f"{_side(obs.bearing_to(*target))}, {left:.0f} units left"
 
     def _route_target(self, obs: Obs):
@@ -103,7 +144,7 @@ class Perception:
             self.idx = best
             off = math.dist(pos, self.route[best])
         if not self.route or off > 96:
-            self.route = self.grid.plan(pos, self.stand)
+            self.route = self.stage_grids[min(self.stage, len(self.goals) - 1)].plan(pos, self.goal.pos)
             self.idx = 0
             if not self.route:
                 return None
@@ -115,15 +156,19 @@ class Perception:
                 break
         left = math.dist(pos, path[self.idx]) + path_length(path[self.idx:])
         if left < 120:
-            target = self.exit_mid
+            target = self.goal.target
         return target, left
 
     # -- text -----------------------------------------------------------------
     def describe(self, obs: Obs, last_cmd: str | None = None, health_override: float | None = None) -> str:
         hp = obs.health if health_override is None else health_override
         weapon = WEAPON_NAMES.get(obs.weapon, "fist")
+        self._advance(obs)
         parts = [f"Health {hp:.0f}, armor {obs.armor:.0f}. Weapon: {weapon}; "
                  f"{obs.bullets:.0f} bullets, {obs.shells:.0f} shells."]
+        held = sorted(self.keys_held(obs))
+        if held:
+            parts[0] += f" Keys: {', '.join(held)}."
 
         vis = sorted((m for m in obs.monsters if m.visible), key=lambda m: obs.dist_to(m.x, m.y))[:3]
         if vis:
@@ -157,7 +202,7 @@ class Perception:
         if self.compass:
             hint = self._route_hint(obs)
             if hint:
-                parts.append(f"Route to exit: {hint}.")
+                parts.append(f"Route to {self.goal.label}: {hint}.")
 
         if self.prev is not None and obs.damage_taken > self.prev.damage_taken and not vis:
             # Doom's status-bar face turns toward the damage source; give the same cue in words:
@@ -185,6 +230,7 @@ class Perception:
     def reset(self) -> None:
         self.route, self.idx, self.prev = None, 0, None
         self.door_ceil_prev = {}
+        self.stage = 0
 
 
 def _side(b: float, ahead: float = 7.5) -> str:

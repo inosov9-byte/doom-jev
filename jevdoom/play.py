@@ -30,6 +30,7 @@ from .env import blank_action, make_game, observe
 from .executor import Executor
 from .jev import LOCAL_URL
 from .perception import Perception
+from .progression import load_or_solve, stage_grids
 from .wadmap import NavGrid, exit_target, load_map, path_length
 
 TICRATE = 35
@@ -151,11 +152,17 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     run_dir = Path(runs_dir) / (f"{stamp}-{arm}" + (f"-s{seed}" if seed is not None else ""))
     run_dir.mkdir(parents=True, exist_ok=True)
     m = load_map(wad, map_name)
-    grid = NavGrid(m)
-    perc = Perception(grid, compass=compass)
-    stand, _, _ = exit_target(m)
-    start = next((t[0], t[1]) for t in m.things if t[3] == 1)
-    total_route = path_length(grid.plan(start, stand))
+    start = next((float(t[0]), float(t[1])) for t in m.things if t[3] == 1)
+    goals = load_or_solve(m, start)
+    grids = stage_grids(m, goals)
+    grid = grids[-1]
+    perc = Perception(grid, compass=compass, goals=goals, stage_grids=grids)
+    # route length over all stages: start -> subgoal 1 -> ... -> exit
+    stage_len, here = [], start
+    for gl, gr in zip(goals, grids):
+        stage_len.append(path_length(gr.plan(here, gl.pos) or [here, gl.pos]))
+        here = gl.pos
+    total_route = sum(stage_len)
 
     g = make_game(wad, map_name, skill, visible=window, timeout_s=timeout, seed=seed)
     g.new_episode()
@@ -232,7 +239,8 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
             g.make_action(exe.step(obs), 1)
             tic += 1
             if perc.route:
-                left = math.dist((obs.x, obs.y), perc.route[perc.idx]) + path_length(perc.route[perc.idx:])
+                left = (math.dist((obs.x, obs.y), perc.route[perc.idx]) + path_length(perc.route[perc.idx:])
+                        + sum(stage_len[perc.stage + 1:]))
                 best_left = min(best_left, left)
                 info["left"] = left
             if ffmpeg is not None and obs.screen is not None:

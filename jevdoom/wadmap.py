@@ -44,6 +44,8 @@ class MapData:
     special: np.ndarray
     things: list[tuple[int, int, int, int, int]]
     door_sectors: set[int] = field(default_factory=set)
+    sector_tag: np.ndarray | None = None
+    lift_sectors: set[int] = field(default_factory=set)      # moving floors: step limits ignored
 
     @property
     def exit_lines(self) -> list[Line]:
@@ -75,7 +77,7 @@ def load_map(wad_path: str, map_name: str) -> MapData:
                           sides[s1][5], sides[s2][5] if s2 != -1 else -1))
     m = MapData(map_name, lines,
                 np.array([s[0] for s in secs], float), np.array([s[1] for s in secs], float),
-                np.array([s[5] for s in secs], int), things)
+                np.array([s[5] for s in secs], int), things, sector_tag=np.array([s[6] for s in secs], int))
     for l in lines:
         if l.special in DOOR_SPECIALS and l.back != -1:
             m.door_sectors.add(l.back)
@@ -156,6 +158,8 @@ class NavGrid:
         for l in self.m.lines:
             if l.back == -1 or (l.flags & 1):
                 continue
+            if l.front in self.m.lift_sectors or l.back in self.m.lift_sectors:
+                continue
             ff, bf = self.floor_s[l.front], self.floor_s[l.back]
             gap = min(self.ceil_s[l.front], self.ceil_s[l.back]) - max(ff, bf)
             bad = set()
@@ -184,7 +188,8 @@ class NavGrid:
     # -- planning ---------------------------------------------------------
     def _edge_ok(self, r0, c0, r1, c1) -> bool:
         f0, f1 = self.floor[r0, c0], self.floor[r1, c1]
-        if f1 - f0 > MAX_STEP:
+        if f1 - f0 > MAX_STEP and not (self.sector[r0, c0] in self.m.lift_sectors
+                                        or self.sector[r1, c1] in self.m.lift_sectors):
             return False
         s0 = self.sector[r0, c0]
         if s0 == self.sector[r1, c1]:

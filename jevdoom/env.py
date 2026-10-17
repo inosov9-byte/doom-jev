@@ -24,7 +24,11 @@ MONSTER_NAMES = {"Zombieman": "zombieman", "ShotgunGuy": "shotgun guy", "DoomImp
 PICKUP_NAMES = {"Stimpack": "stimpack", "Medikit": "medikit", "HealthBonus": "health bonus",
                 "ArmorBonus": "armor bonus", "GreenArmor": "green armor", "BlueArmor": "blue armor",
                 "Clip": "ammo clip", "ClipBox": "box of bullets", "Shell": "shells", "ShellBox": "box of shells",
-                "Shotgun": "shotgun", "Chaingun": "chaingun"}
+                "Shotgun": "shotgun", "Chaingun": "chaingun",
+                "RedCard": "red keycard", "BlueCard": "blue keycard", "YellowCard": "yellow keycard",
+                "RedSkull": "red skull key", "BlueSkull": "blue skull key", "YellowSkull": "yellow skull key"}
+KEY_OBJECTS = {"RedCard": "red", "RedSkull": "red", "BlueCard": "blue", "BlueSkull": "blue",
+               "YellowCard": "yellow", "YellowSkull": "yellow"}
 WEAPON_NAMES = {1: "fist", 2: "pistol", 3: "shotgun"}
 
 
@@ -57,6 +61,7 @@ class Obs:
     monsters: list[Thing] = field(default_factory=list)   # alive monsters; visible flag from labels buffer
     pickups: list[Thing] = field(default_factory=list)
     heights: dict[int, tuple[float, float]] = field(default_factory=dict)  # live floor/ceiling per sector
+    keys_present: set[str] = field(default_factory=set)   # key colours still lying in the map
     screen: np.ndarray | None = None
 
     def bearing_to(self, tx: float, ty: float) -> float:
@@ -112,6 +117,8 @@ def observe(g: vzd.DoomGame, tic: int) -> Obs | None:
         elif o.category == "Monster":
             obs.monsters.append(Thing(o.id, o.name, o.category, o.position_x, o.position_y, o.id in visible))
         elif o.name in PICKUP_NAMES:
+            if o.name in KEY_OBJECTS:
+                obs.keys_present.add(KEY_OBJECTS[o.name])
             obs.pickups.append(Thing(o.id, o.name, o.category, o.position_x, o.position_y, o.id in visible))
     obs.heights = {sec.id: (sec.floor_height, sec.ceiling_height) for sec in s.sectors}
     return obs

@@ -4,7 +4,7 @@ Used as the teacher for distillation (instant, free, consistent labels for any s
 including states the student reaches on its own) and as a reference arm in live runs.
 It never runs inside a Jev or Haiku arm.
 
-Priorities: press the exit switch > fight close enemies (aim, shoot, dodge when hit; skipped
+Priorities: act on the current goal up close (exit or other switch, key, trigger line) > fight close enemies (aim, shoot, dodge when hit; skipped
 near the exit or at low health, where running is safer) >
 face an attacker shooting from out of view > pick up ammo when out / health when low >
 open a closed door on the way > turn toward the route > get unstuck > walk forward.
@@ -62,13 +62,16 @@ def parse_state(s: str) -> dict:
             r = re.match(r"\s*(ahead|behind|\d+ left|\d+ right) (open|(\d+) (.+))", part)
             if r:
                 f["rays"][r.group(1)] = (1500.0, "open") if r.group(2) == "open" else (float(r.group(3)), r.group(4))
-    m = re.search(r"Route to exit: exit switch (\d+) away, ([^.]+)\.", s)
+    f["goal"] = "exit"
+    m = re.search(r"Route to ([a-z ]+): ([a-z ]+?) (\d+) away, ([^.]+)\.", s)
     if m:
-        f["exit_near"] = (float(m.group(1)), _angle(m.group(2)))
+        f["goal"] = m.group(1)
+        f["exit_near"] = (float(m.group(3)), _angle(m.group(4)))
     else:
-        m = re.search(r"Route to exit: ([^,]+), (\d+) units left", s)
+        m = re.search(r"Route to ([a-z ]+): ([^,]+), (\d+) units left", s)
         if m:
-            f["route"], f["route_left"] = _angle(m.group(1)), float(m.group(2))
+            f["goal"] = m.group(1)
+            f["route"], f["route_left"] = _angle(m.group(2)), float(m.group(3))
     m = re.search(r"Toxic nukage floor \d+ units (ahead|30 left|30 right)", s)
     f["nukage"] = m.group(1) if m else None
     m = re.search(r"Being shot from out of view, ([^.]+)\.", s)
@@ -112,14 +115,21 @@ def decide(state: str) -> str:
     ahead = f["rays"].get("ahead", (1500.0, "open"))
     has_ammo = f["bullets"] > 0 or f["shells"] > 0
 
-    # 1. exit switch
+    goal = f["goal"]
+    # 1. the current goal up close: exit switch / switch (use), switch to shoot (fire), key or trigger line (walk on)
     if ahead[1].startswith("exit switch") and ahead[0] <= USE_REACH:
+        return "use"
+    if goal == "switch" and ahead[1] == "switch" and ahead[0] <= USE_REACH:
         return "use"
     if f["exit_near"] is not None:
         d, a = f["exit_near"]
-        if a is not None and abs(a) >= 7.5:
+        if a is not None and abs(a) >= (2.5 if goal == "switch to shoot" else 7.5):
             return turn_toward(a)
-        return "use" if d <= USE_REACH else ("forward_short" if d < 200 else "forward")
+        if goal == "switch to shoot":
+            return "fire"
+        if goal in ("exit", "switch"):
+            return "use" if d <= USE_REACH else ("forward_short" if d < 200 else "forward")
+        return "forward_short" if d < 200 else "forward"     # key or trigger line: walk onto it
 
     # 2. enemies within range (fist range when out of ammo). Near the exit or at low health,
     #    run instead: the switch ends the level, and a fight at 0.7 s per decision is a bad trade.
@@ -156,7 +166,11 @@ def decide(state: str) -> str:
     if route is not None and abs(route) >= 7.5:
         return turn_toward(route)
 
-    # 7. unstick: sidestep toward the open side; if the sidestep was blocked too, back off
+    # 7. a lift: the route goes up a ledge too high to climb right in front: press use to lower it
+    if ahead[1].startswith("ledge too high") and ahead[0] <= USE_REACH and f["blocked"]:
+        return "use"
+
+    # 8. unstick: sidestep toward the open side; if the sidestep was blocked too, back off
     if f["blocked"]:
         if f["last"] in ("strafe_left", "strafe_right"):
             return "back"
