@@ -5,7 +5,8 @@ Jev picks labels and cannot output numbers, so turn amounts live in the label
 The 5 and 30 degree steps were added after measuring aim error: with 15/45/90 only, 38% of
 aiming turns could not get within 7 degrees of the target, and far targets 8-11 degrees off
 could not be centred at all.
-Moves have one length, about one decision interval (20 tics, 0.57 s). A new command
+Moves last about one decision interval (20 tics, 0.57 s); forward_short is 6 tics for precise
+approaches; fire_strafe_* fire while sidestepping (the standard way to dodge projectiles). A new command
 cancels whatever is still running, so the player keeps moving between decisions.
 Distances below were measured in E1M1 with run held, including the slide after release.
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 # id -> description shown to the teacher model (None: the id says it all)
 COMMANDS: dict[str, str | None] = {
     "forward": "run forward about 300 units",
+    "forward_short": "step forward about 80 units",
     "back": "back up about 300 units",
     "strafe_left": "sidestep left about 250 units",
     "strafe_right": "sidestep right about 250 units",
@@ -31,6 +33,8 @@ COMMANDS: dict[str, str | None] = {
     "turn_right_90": None,
     "turn_around": "turn 180 degrees",
     "fire": "shoot at whatever is in the crosshair",
+    "fire_strafe_left": "shoot while sidestepping left, to dodge",
+    "fire_strafe_right": "shoot while sidestepping right, to dodge",
     "use": "open a door or press a switch within use reach straight ahead",
 }
 COMMAND_IDS = list(COMMANDS)
@@ -39,5 +43,6 @@ COMMAND_IDS = list(COMMANDS)
 TURN_DEG = {**{f"turn_left_{a}": a for a in (5, 15, 30, 45, 90)},
             **{f"turn_right_{a}": -a for a in (5, 15, 30, 45, 90)}, "turn_around": 180}
 MOVE_TICS = 20
-FIRE_TICS = 10
+SHORT_MOVE_TICS = 6
+FIRE_TICS = 20          # about one decision interval: keep shooting until the next command
 USE_TICS = 6

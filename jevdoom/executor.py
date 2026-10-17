@@ -6,12 +6,12 @@ player stands still.
 """
 from __future__ import annotations
 
-from .commands import FIRE_TICS, MOVE_TICS, TURN_DEG, USE_TICS
+from .commands import FIRE_TICS, MOVE_TICS, SHORT_MOVE_TICS, TURN_DEG, USE_TICS
 from .env import B, BI, Obs, blank_action
 
 MAX_TURN_PER_TIC = 30.0
 SETTLE_TICS = 8          # a move/fire/use counts as applied after this many tics
-MOVE_BUTTON = {"forward": B.MOVE_FORWARD, "back": B.MOVE_BACKWARD,
+MOVE_BUTTON = {"forward": B.MOVE_FORWARD, "forward_short": B.MOVE_FORWARD, "back": B.MOVE_BACKWARD,
                "strafe_left": B.MOVE_LEFT, "strafe_right": B.MOVE_RIGHT}
 
 
@@ -28,7 +28,11 @@ class Executor:
         self.turn_left_deg = float(TURN_DEG.get(cmd, 0))
         if cmd in TURN_DEG:
             self.left = int(abs(self.turn_left_deg) // MAX_TURN_PER_TIC) + 2
+        elif cmd == "forward_short":
+            self.left = SHORT_MOVE_TICS
         elif cmd in MOVE_BUTTON:
+            self.left = MOVE_TICS
+        elif cmd.startswith("fire_strafe"):
             self.left = MOVE_TICS
         elif cmd == "fire":
             self.left = FIRE_TICS
@@ -64,9 +68,13 @@ class Executor:
                 self.turn_left_deg -= d
         elif c in MOVE_BUTTON:
             a[BI[MOVE_BUTTON[c]]] = 1
-            a[BI[B.SPEED]] = 1
+            a[BI[B.SPEED]] = c != "forward_short"     # short step walks, for precision
         elif c == "fire":
             a[BI[B.ATTACK]] = 1
+        elif c.startswith("fire_strafe"):
+            a[BI[B.ATTACK]] = 1
+            a[BI[B.MOVE_LEFT if c.endswith("left") else B.MOVE_RIGHT]] = 1
+            a[BI[B.SPEED]] = 1
         elif c == "use":
             a[BI[B.USE]] = 1 if self.left % 2 == 1 else 0  # press/release so Doom registers it
         return a

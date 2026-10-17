@@ -19,6 +19,7 @@ MAX_STEP = 24
 PLAYER_HEIGHT = 56
 DOOR_SPECIALS = {1, 26, 27, 28, 31, 32, 33, 34, 117, 118}
 EXIT_SPECIALS = {11, 51, 52, 124, 197, 198}
+NORMAL_EXITS = {11, 52, 197}          # 51, 124, 198 are secret exits
 DAMAGE_SECTORS = {4, 5, 7, 11, 16}
 SQRT2 = math.sqrt(2)
 
@@ -296,7 +297,8 @@ def path_length(path) -> float:
 
 def exit_target(m: MapData) -> tuple[tuple[float, float], tuple[float, float], float]:
     """Stand point in front of the first exit switch, the switch midpoint, and the facing angle."""
-    l = m.exit_lines[0]
+    normal = [l for l in m.exit_lines if l.special in NORMAL_EXITS]
+    l = (normal or m.exit_lines)[0]
     (x1, y1), (x2, y2) = l.v1, l.v2
     mx, my = (x1 + x2) / 2, (y1 + y2) / 2
     # Front side (where the player stands) is to the right of v1->v2.

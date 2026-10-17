@@ -107,6 +107,24 @@ class HaikuEngine(Engine):
                 "effort": self.effort, "prompt": "shared"}
 
 
+class RulesEngine(Engine):
+    """Rule-based expert (expert.py) on the same state text. Reference arm and teacher; no model."""
+
+    def __init__(self, name: str = "rules", lag: float = 0.0):
+        from .expert import decide
+        self.name, self._decide, self.lag = name, decide, lag
+
+    def decide(self, state: str) -> Decision:
+        t = time.perf_counter()
+        c = self._decide(state)
+        if self.lag:
+            time.sleep(self.lag)          # same decisions, delivered at a model's speed
+        return Decision(c, None, time.perf_counter() - t)
+
+    def describe(self) -> dict:
+        return {"name": self.name, "engine": "rules", "model": "expert.py", "lag_s": self.lag}
+
+
 class MockEngine(Engine):
     """Free stand-in with a latency profile, for testing the harness (--dry-run)."""
 
@@ -129,13 +147,17 @@ class MockEngine(Engine):
 QWEN_HOSTED = "featherless-ai/Qwen3.6-35B-A3B-classifier"
 GEMMA_HOSTED = "featherless-ai/gemma-4-26B-A4B-classifier"
 # Typical latencies measured on this setup, used only by --dry-run mocks.
-MOCK_LATENCY = {"jev-local": 0.7, "jev-hosted": 0.85, "jev-hosted-gemma": 1.35, "haiku": 0.8, "haiku-think": 2.0}
+MOCK_LATENCY = {"rules": 0.05, "rules-lag": 0.7, "jev-local": 0.7, "jev-hosted": 0.85, "jev-hosted-gemma": 1.35, "haiku": 0.8, "haiku-think": 2.0}
 
 
 def make_engine(arm: str, local_url: str = LOCAL_URL, dry_run: bool = False, seed: int = 0) -> Engine:
     hosted_gap = 0.55                       # Featherless demo: at most 2 requests/s
     if dry_run:
         return MockEngine(arm, MOCK_LATENCY.get(arm, 0.8), hosted_gap if arm.startswith("jev-hosted") else 0.0, seed)
+    if arm == "rules":
+        return RulesEngine()
+    if arm == "rules-lag":
+        return RulesEngine("rules-lag", lag=0.7)
     if arm == "jev-local":
         return JevEngine(arm, local_url, "student", student_prompt=True)
     if arm == "jev-hosted":
@@ -149,4 +171,4 @@ def make_engine(arm: str, local_url: str = LOCAL_URL, dry_run: bool = False, see
     raise ValueError(f"unknown arm {arm!r}; choose from {ARMS}")
 
 
-ARMS = ["jev-local", "jev-hosted", "jev-hosted-gemma", "haiku", "haiku-think"]
+ARMS = ["jev-local", "jev-hosted", "jev-hosted-gemma", "haiku", "haiku-think", "rules", "rules-lag"]

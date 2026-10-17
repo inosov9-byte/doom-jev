@@ -7,6 +7,9 @@
    real one. This version asks the model for logits at those positions only
    (`logits_to_keep`), which removes most of the 248k-wide output projection work.
    The loss is unchanged.
+3. --eval-every N turns on evaluation every N optimizer steps (RFDT hard-codes no evaluation
+   during training), so progress shows up while training runs. Use a small --validation file
+   for this; evaluate the full held-out set after export with evaluate.py.
 
 usage: python -m jevdoom.train_rfdt --rfdt C:\\tmp\\jev-doom\\src-simple-jev\\RFDT <RFDT train.py args>
 """
@@ -51,6 +54,11 @@ def main():
         rfdt_dir = r"C:\tmp\jev-doom\src-simple-jev\RFDT"
     full = "--full-logits" in argv
     argv = [a for a in argv if a != "--full-logits"]
+    eval_every = 0
+    if "--eval-every" in argv:
+        i = argv.index("--eval-every")
+        eval_every = int(argv[i + 1])
+        argv = argv[:i] + argv[i + 2:]
     _stub_distributed()
     sys.path.insert(0, rfdt_dir)
     sys.path.insert(0, os.path.join(os.path.dirname(rfdt_dir), "hf-server"))
@@ -58,6 +66,14 @@ def main():
 
     if not full:
         train.decision_logits = decision_logits_last_only
+    if eval_every:
+        original = train.TrainingArguments
+
+        def with_eval(*a, **kw):
+            kw.update(eval_strategy="steps", eval_steps=eval_every)
+            return original(*a, **kw)
+
+        train.TrainingArguments = with_eval
     sys.argv = [os.path.join(rfdt_dir, "train.py")] + argv
     t0 = time.time()
     try:

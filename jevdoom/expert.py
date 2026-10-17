@@ -1,0 +1,157 @@
+"""Rule-based expert: reads the same state text as Jev and Haiku and picks one of the 20 commands.
+
+Used as the teacher for distillation (instant, free, consistent labels for any state,
+including states the student reaches on its own) and as a reference arm in live runs.
+It never runs inside a Jev or Haiku arm.
+
+Priorities: press the exit switch > fight enemies within range (aim, shoot, dodge when hit) >
+face an attacker shooting from out of view > pick up ammo when out / health when low >
+open a closed door on the way > turn toward the route > get unstuck > walk forward.
+"""
+from __future__ import annotations
+
+import re
+
+STEPS = (5, 15, 30, 45, 90)
+USE_REACH = 64
+ENGAGE = 750          # pistol/shotgun are not worth firing beyond this
+FIST = 90
+AMMO_ITEMS = ("ammo clip", "box of bullets", "shells", "box of shells", "shotgun")
+HEALTH_ITEMS = ("stimpack", "medikit", "health bonus")
+
+
+def _angle(text: str) -> float | None:
+    """'20 deg left' -> +20, '20 deg right' -> -20, 'straight ahead' -> 0, 'behind' -> 180."""
+    text = text.strip()
+    if text.startswith("straight ahead") or text.startswith("in the crosshair"):
+        return 0.0
+    if text.startswith("behind"):
+        return 180.0
+    m = re.match(r"(\d+) deg (left|right)", text)
+    if not m:
+        return None
+    return float(m.group(1)) * (1 if m.group(2) == "left" else -1)
+
+
+def parse_state(s: str) -> dict:
+    f: dict = {"enemies": [], "pickups": [], "rays": {}, "route": None, "route_left": None, "exit_near": None,
+               "attacker": None, "blocked": False, "last": None, "damage": 0, "health": 100,
+               "bullets": 0, "shells": 0, "weapon": "pistol"}
+    m = re.search(r"Health (\d+)", s)
+    f["health"] = int(m.group(1)) if m else 100
+    m = re.search(r"Weapon: (\w+); (\d+) bullets, (\d+) shells", s)
+    if m:
+        f["weapon"], f["bullets"], f["shells"] = m.group(1), int(m.group(2)), int(m.group(3))
+    m = re.search(r"Enemies in view: ([^.]*)\.", s)
+    if m and m.group(1) != "none":
+        for part in m.group(1).split(";"):
+            e = re.match(r"\s*([a-z ]+?) (\d+) away, (.+)", part)
+            if e:
+                f["enemies"].append({"kind": e.group(1), "dist": int(e.group(2)), "angle": _angle(e.group(3)),
+                                     "crosshair": e.group(3).startswith("in the crosshair")})
+    m = re.search(r"Pickups in view: ([^.]*)\.", s)
+    if m:
+        for part in m.group(1).split(";"):
+            p = re.match(r"\s*([a-z ]+?) (\d+) away, (.+)", part)
+            if p:
+                f["pickups"].append({"name": p.group(1), "dist": int(p.group(2)), "angle": _angle(p.group(3))})
+    m = re.search(r"Obstacles: ([^.]*(?:\.\d[^.]*)*)\.", s)
+    if m:
+        for part in m.group(1).split(";"):
+            r = re.match(r"\s*(ahead|behind|\d+ left|\d+ right) (open|(\d+) (.+))", part)
+            if r:
+                f["rays"][r.group(1)] = (1500.0, "open") if r.group(2) == "open" else (float(r.group(3)), r.group(4))
+    m = re.search(r"Route to exit: exit switch (\d+) away, ([^.]+)\.", s)
+    if m:
+        f["exit_near"] = (float(m.group(1)), _angle(m.group(2)))
+    else:
+        m = re.search(r"Route to exit: ([^,]+), (\d+) units left", s)
+        if m:
+            f["route"], f["route_left"] = _angle(m.group(1)), float(m.group(2))
+    m = re.search(r"Being shot from out of view, ([^.]+)\.", s)
+    if m:
+        f["attacker"] = _angle(m.group(1))
+    m = re.search(r"Last command: (\w+), moved (\d+) units( \(blocked\))?(, took (\d+) damage)?", s)
+    if m:
+        f["last"], f["blocked"] = m.group(1), bool(m.group(3))
+        f["damage"] = int(m.group(5)) if m.group(5) else 0
+    return f
+
+
+def turn_toward(angle: float) -> str:
+    """Nearest available turn for a signed angle (positive = left)."""
+    if abs(angle) > 135:
+        return "turn_around"
+    side = "left" if angle > 0 else "right"
+    step = min(STEPS, key=lambda st: abs(abs(angle) - st))
+    return f"turn_{side}_{step}"
+
+
+def _open_side(f: dict, prefix: str = "") -> str:
+    left = min(f["rays"].get("30 left", (0.0, ""))[0], f["rays"].get("60 left", (0.0, ""))[0])
+    right = min(f["rays"].get("30 right", (0.0, ""))[0], f["rays"].get("60 right", (0.0, ""))[0])
+    return prefix + ("left" if left >= right else "right")
+
+
+def _go_to(angle: float, dist: float) -> str:
+    if abs(angle) >= 7.5:
+        return turn_toward(angle)
+    return "forward_short" if dist < 160 else "forward"
+
+
+def decide(state: str) -> str:
+    f = parse_state(state)
+    ahead = f["rays"].get("ahead", (1500.0, "open"))
+    has_ammo = f["bullets"] > 0 or f["shells"] > 0
+
+    # 1. exit switch
+    if ahead[1].startswith("exit switch") and ahead[0] <= USE_REACH:
+        return "use"
+    if f["exit_near"] is not None:
+        d, a = f["exit_near"]
+        if a is not None and abs(a) >= 7.5:
+            return turn_toward(a)
+        return "use" if d <= USE_REACH else ("forward_short" if d < 200 else "forward")
+
+    # 2. enemies within range (fist range when out of ammo)
+    reach = ENGAGE if has_ammo else FIST
+    threats = [e for e in f["enemies"] if e["dist"] <= reach and e["angle"] is not None]
+    if threats:
+        t = min(threats, key=lambda e: e["dist"])
+        if t["crosshair"]:
+            if f["damage"] > 0 and f["last"] in ("fire", "fire_strafe_left", "fire_strafe_right"):
+                return _open_side(f, "fire_strafe_")       # getting hit while shooting: dodge and keep firing
+            return "fire"
+        return turn_toward(t["angle"])
+
+    # 3. shot from out of view: face the attacker if we can fight back
+    if f["attacker"] is not None and has_ammo:
+        return turn_toward(f["attacker"])
+
+    # 4. supplies: ammo when out, health when low
+    want = AMMO_ITEMS if not has_ammo else HEALTH_ITEMS if f["health"] < 40 else ()
+    items = [p for p in f["pickups"] if p["name"] in want and p["dist"] < 600 and p["angle"] is not None]
+    if items:
+        p = min(items, key=lambda p: p["dist"])
+        return _go_to(p["angle"], p["dist"])
+
+    route = f["route"]
+    # 5. doors on the way
+    if ahead[1].startswith("door (closed)") and ahead[0] <= USE_REACH and (route is None or abs(route) <= 60):
+        return "use"
+    if ahead[1].startswith("door (opening"):
+        return "forward_short"
+
+    # 6. face the route
+    if route is not None and abs(route) >= 7.5:
+        return turn_toward(route)
+
+    # 7. unstick: sidestep toward the open side; if the sidestep was blocked too, back off
+    if f["blocked"]:
+        if f["last"] in ("strafe_left", "strafe_right"):
+            return "back"
+        return _open_side(f, "strafe_")
+    if ahead[1] != "open" and ahead[0] < 40:
+        return _open_side(f, "strafe_")
+
+    return "forward" if ahead[0] > 200 else "forward_short"

@@ -143,7 +143,9 @@ def git_commit() -> str:
 def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\doom1.wad", map_name: str = "E1M1",
         skill: int = 3, local_url: str = LOCAL_URL, timeout: int = 300, window: bool = False,
         record_video: bool = False, runs_dir: str = "runs", compass: bool = True, dry_run: bool = False,
-        engine: Engine | None = None) -> dict:
+        engine: Engine | None = None, stepped: bool = False, quiet: bool = False) -> dict:
+    """stepped=True: the game waits for every decision (no real time, no worker thread). For
+    developing the rules expert and recording expert trajectories; not used for the comparison."""
     engine = engine or make_engine(arm, local_url=local_url, dry_run=dry_run, seed=seed or 0)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = Path(runs_dir) / (f"{stamp}-{arm}" + (f"-s{seed}" if seed is not None else ""))
@@ -161,7 +163,8 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
         g.make_action(blank_action())
     exe = Executor()
     brain = Brain(engine, perc)
-    brain.start()
+    if not stepped:
+        brain.start()
 
     ffmpeg = None
     if record_video:
@@ -187,7 +190,25 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
             obs = observe(g, tic)
             if obs is None:
                 break
-            brain.offer(obs)
+            if stepped and exe.settled:
+                if exe_seq == brain.issued:                  # previous command took effect: decide now
+                    t0 = time.perf_counter()
+                    st = perc.describe(obs, last_cmd=brain.last_cmd)
+                    try:
+                        dec, err = engine.decide(st), None
+                    except Exception as e:
+                        dec, err = None, f"{type(e).__name__}: {str(e)[:200]}"
+                    if dec is not None:
+                        brain.issued += 1
+                        brain.last_cmd = dec.choice
+                    brain.answers.put({"obs_tic": obs.tic, "state": st, "decision": dec, "perception_s": 0.0,
+                                       "error": err, "seq": brain.issued, "wall": time.perf_counter() - t0})
+            if not stepped:
+                brain.offer(obs)
+                # Release the worker only now: this obs was taken after the last command's tics ran.
+                # (Setting it right after make_action let the worker read the pre-command obs.)
+                if exe_seq == brain.issued and exe.settled:
+                    brain.applied.set()
             while not brain.answers.empty():
                 d = brain.answers.get()
                 n_dec += 1
@@ -210,8 +231,6 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                 log.write(json.dumps(rec) + "\n")
             g.make_action(exe.step(obs), 1)
             tic += 1
-            if exe_seq == brain.issued and exe.settled:
-                brain.applied.set()
             if perc.route:
                 left = math.dist((obs.x, obs.y), perc.route[perc.idx]) + path_length(perc.route[perc.idx:])
                 best_left = min(best_left, left)
@@ -219,10 +238,11 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
             if ffmpeg is not None and obs.screen is not None:
                 info.update(t=tic / TICRATE, health=obs.health, kills=obs.kills)
                 ffmpeg.stdin.write(draw_panel(obs.screen, info).tobytes())
-            target = t_start + tic / TICRATE                   # hold real time: 35 tics per second
-            delay = target - time.perf_counter()
-            if delay > 0:
-                time.sleep(delay)
+            if not stepped:
+                target = t_start + tic / TICRATE               # hold real time: 35 tics per second
+                delay = target - time.perf_counter()
+                if delay > 0:
+                    time.sleep(delay)
         if g.is_player_dead():
             outcome = "died"
         elif g.get_episode_time() < g.get_episode_timeout() - 1:   # ended early and alive: level exit
@@ -252,7 +272,8 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                    "input_tokens": tok_in, "output_tokens": tok_out, "cost_usd": round(cost, 4),
                    "route_total": round(total_route), "best_route_left": round(best_left),
                    "engine": engine.describe(), "skill": skill, "map": map_name, "timeout_s": timeout,
-                   "compass": compass, "dry_run": dry_run, "commit": git_commit(), "run_dir": str(run_dir)}
+                   "compass": compass, "dry_run": dry_run, "stepped": stepped, "commit": git_commit(),
+                   "run_dir": str(run_dir)}
         (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
         g.close()
     return summary
@@ -272,10 +293,11 @@ def main(argv=None):
     ap.add_argument("--runs", default="runs")
     ap.add_argument("--no-compass", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="mock engine with the arm's latency profile; free")
+    ap.add_argument("--stepped", action="store_true", help="game waits for each decision (expert development)")
     args = ap.parse_args(argv)
     s = run(args.arm, args.seed, wad=args.wad, map_name=args.map, skill=args.skill, local_url=args.local_url,
             timeout=args.timeout, window=args.window, record_video=args.record_video, runs_dir=args.runs,
-            compass=not args.no_compass, dry_run=args.dry_run)
+            compass=not args.no_compass, dry_run=args.dry_run, stepped=args.stepped)
     print(json.dumps(s, indent=2))
 
 
