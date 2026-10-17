@@ -6,6 +6,8 @@ Jev is [Simple Jev](https://github.com/featherless-ai/simple-jev), an open class
 
 Status (2026-10-17): the pipeline works end to end and a distilled local model plays in real time. No model, teacher included, has finished E1M1 yet.
 
+Current experiment: **Jev vs Haiku** at real-time DOOM, same perception and commands, only the decision engine swapped. Design, arms and procedure: [EXPERIMENT.md](EXPERIMENT.md).
+
 ## Two models, one Jev
 
 | | Teacher | Student |

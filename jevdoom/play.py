@@ -1,11 +1,11 @@
-"""Jev plays DOOM E1M1 in real time.
+"""A decision engine plays DOOM E1M1 in real time.
 
-The game advances at 35 tics/s no matter what. A worker thread repeatedly takes the
-latest observation, turns it into text, asks Jev for one command, and hands the answer
-to the game loop, which plays it as a short macro. While Jev thinks, the player
-finishes the previous macro and then stands still. No other policy acts.
+The game advances at 35 tics/s no matter what. A worker thread takes the latest
+observation, turns it into text, asks the engine (Jev or Haiku, see engines.py) for one
+command, and hands the answer to the game loop, which plays it as a short macro. The next
+request waits until that command has taken effect. No other policy acts.
 
-usage: python -m jevdoom.play --url http://127.0.0.1:8012 [--teacher] [--record-video]
+usage: python -m jevdoom.play --arm jev-local [--seed 1] [--record-video] [--dry-run]
 """
 from __future__ import annotations
 
@@ -25,22 +25,24 @@ import cv2
 import numpy as np
 
 from .commands import COMMAND_IDS
-from .executor import Executor
+from .engines import ARMS, Engine, make_engine
 from .env import blank_action, make_game, observe
-from .jev import HOSTED_URL, TEACHER_MODEL, JevClient, student_request, teacher_request
+from .executor import Executor
+from .jev import LOCAL_URL
 from .perception import Perception
 from .wadmap import NavGrid, exit_target, load_map, path_length
 
 TICRATE = 35
 PANEL_W = 400
+REPO = Path(__file__).resolve().parent.parent
 
 
 class Brain(threading.Thread):
-    """Serial decision loop: latest obs -> text -> Jev -> command."""
+    """Serial decision loop: latest obs -> text -> engine -> command."""
 
-    def __init__(self, client: JevClient, perc: Perception, make_body, min_gap: float):
+    def __init__(self, engine: Engine, perc: Perception):
         super().__init__(daemon=True)
-        self.client, self.perc, self.make_body, self.min_gap = client, perc, make_body, min_gap
+        self.engine, self.perc = engine, perc
         self.latest = None
         self.lock = threading.Lock()
         self.have_obs = threading.Event()
@@ -65,26 +67,25 @@ class Brain(threading.Thread):
             if obs is None:
                 continue
             self.applied.wait(1.5)                  # never decide on a view that predates the last command
-            wait = self.min_gap - (time.monotonic() - last_start)
+            wait = self.engine.min_gap - (time.monotonic() - last_start)
             if wait > 0:
                 time.sleep(wait)
             with self.lock:
-                obs = self.latest                       # freshest state right before the call
+                obs = self.latest                   # freshest state right before the call
             last_start = time.monotonic()
             t0 = time.perf_counter()
             state = self.perc.describe(obs, last_cmd=self.last_cmd)
             t_perc = time.perf_counter() - t0
             try:
-                ans, latency = self.client.classify(self.make_body(state))
-                err = None
+                dec, err = self.engine.decide(state), None
             except Exception as e:
-                ans, latency, err = None, time.perf_counter() - t0, f"{type(e).__name__}: {e}"
-            if ans is not None:
-                self.issued += 1            # bump first: the game loop compares against it before clear
+                dec, err = None, f"{type(e).__name__}: {str(e)[:200]}"
+            if dec is not None:
+                self.issued += 1                    # bump first: the game loop compares against it before clear
                 self.applied.clear()
-                self.last_cmd = ans["choice"]
-            self.answers.put({"obs_tic": obs.tic, "state": state, "answer": ans, "latency": latency,
-                              "perception_s": t_perc, "error": err, "seq": self.issued})
+                self.last_cmd = dec.choice
+            self.answers.put({"obs_tic": obs.tic, "state": state, "decision": dec, "perception_s": t_perc,
+                              "error": err, "seq": self.issued, "wall": time.perf_counter() - t0})
             if err:
                 time.sleep(1.0)
 
@@ -99,17 +100,20 @@ def draw_panel(frame: np.ndarray, info: dict) -> np.ndarray:
         cv2.putText(panel, text, (12, y), cv2.FONT_HERSHEY_SIMPLEX, size, color, thick, cv2.LINE_AA)
         y += int(26 * size / 0.5)
 
-    put(f"JEV  {info['model']}", 0.55, (120, 200, 255), 1)
-    put(f"t={info['t']:.1f}s  decisions {info['n']}  latency {info['lat']:.2f}s", 0.45)
-    put(f"health {info['health']:.0f}  kills {info['kills']}  exit {info['left']:.0f} units", 0.45)
+    put(f"{info['arm']}  seed {info['seed']}", 0.55, (120, 200, 255), 1)
+    put(f"t={info.get('t', 0):.1f}s  decisions {info['n']}  latency {info['lat']:.2f}s", 0.45)
+    put(f"health {info.get('health', 0):.0f}  kills {info.get('kills', 0)}  exit {info['left']:.0f} units", 0.45)
     y += 6
     put(f"> {info['cmd'] or '-'}", 0.8, (80, 255, 120), 2)
     y += 4
-    probs = info.get("probs") or {}
-    for k in sorted(COMMAND_IDS, key=lambda c: -probs.get(c, 0))[:6]:
-        p = probs.get(k, 0)
-        cv2.rectangle(panel, (150, y - 12), (150 + int(230 * p), y + 2), (80, 160, 255), -1)
-        put(f"{k:15s} {p:4.2f}", 0.42)
+    probs = info.get("probs")
+    if probs:
+        for k in sorted(COMMAND_IDS, key=lambda c: -probs.get(c, 0))[:6]:
+            p = probs.get(k, 0)
+            cv2.rectangle(panel, (150, y - 12), (150 + int(230 * p), y + 2), (80, 160, 255), -1)
+            put(f"{k:15s} {p:4.2f}", 0.42)
+    else:
+        put("(no probabilities: generative engine)", 0.42, (150, 150, 150))
     y += 8
     words, line = (info.get("state") or "").split(), ""
     for w in words:
@@ -124,49 +128,41 @@ def draw_panel(frame: np.ndarray, info: dict) -> np.ndarray:
     return np.hstack([frame, panel])
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--wad", default=r"C:\tmp\jev-doom\wad\doom1.wad")
-    ap.add_argument("--map", default="E1M1")
-    ap.add_argument("--skill", type=int, default=3)
-    ap.add_argument("--url", default="http://127.0.0.1:8012")
-    ap.add_argument("--teacher", action="store_true", help="use the hosted 35B teacher instead of the local model")
-    ap.add_argument("--full-prompt", action="store_true", help="send the teacher-style prompt to a local model (zero-shot)")
-    ap.add_argument("--model-name", default="local")
-    ap.add_argument("--min-gap", type=float, default=0.0, help="seconds between request starts (0.55 for the hosted demo)")
-    ap.add_argument("--timeout", type=int, default=600, help="episode limit in seconds of game time")
-    ap.add_argument("--no-window", action="store_true")
-    ap.add_argument("--record-video", action="store_true")
-    ap.add_argument("--runs", default="runs")
-    ap.add_argument("--no-compass", action="store_true")
-    args = ap.parse_args(argv)
+def git_commit() -> str:
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=REPO,
+                               capture_output=True, text=True).stdout.strip()
+        return sha + ("-dirty" if dirty else "")
+    except OSError:
+        return "unknown"
 
-    if args.teacher:
-        client, make_body, name = JevClient(HOSTED_URL), teacher_request, TEACHER_MODEL.split("/")[-1]
-        args.min_gap = max(args.min_gap, 0.55)
-    else:
-        client, name = JevClient(args.url), args.model_name
-        make_body = (lambda s: student_request(s, full_prompt=args.full_prompt))
 
-    run_dir = Path(args.runs) / (dt.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{name}")
+def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\doom1.wad", map_name: str = "E1M1",
+        skill: int = 3, local_url: str = LOCAL_URL, timeout: int = 300, window: bool = False,
+        record_video: bool = False, runs_dir: str = "runs", compass: bool = True, dry_run: bool = False,
+        engine: Engine | None = None) -> dict:
+    engine = engine or make_engine(arm, local_url=local_url, dry_run=dry_run, seed=seed or 0)
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = Path(runs_dir) / (f"{stamp}-{arm}" + (f"-s{seed}" if seed is not None else ""))
     run_dir.mkdir(parents=True, exist_ok=True)
-    m = load_map(args.wad, args.map)
+    m = load_map(wad, map_name)
     grid = NavGrid(m)
-    perc = Perception(grid, compass=not args.no_compass)
+    perc = Perception(grid, compass=compass)
     stand, _, _ = exit_target(m)
     start = next((t[0], t[1]) for t in m.things if t[3] == 1)
     total_route = path_length(grid.plan(start, stand))
 
-    g = make_game(args.wad, args.map, args.skill, visible=not args.no_window, timeout_s=args.timeout)
+    g = make_game(wad, map_name, skill, visible=window, timeout_s=timeout, seed=seed)
     g.new_episode()
     for _ in range(10):                      # ViZDoom ignores input for the first 7 tics
         g.make_action(blank_action())
     exe = Executor()
-    brain = Brain(client, perc, make_body, args.min_gap)
+    brain = Brain(engine, perc)
     brain.start()
 
     ffmpeg = None
-    if args.record_video:
+    if record_video:
         h, w = g.get_screen_height(), g.get_screen_width()
         ffmpeg = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
                                    "-s", f"{w + PANEL_W}x{h}", "-r", str(TICRATE), "-i", "-", "-c:v", "libx264",
@@ -174,9 +170,12 @@ def main(argv=None):
                                    str(run_dir / "run.mp4")], stdin=subprocess.PIPE)
 
     log = (run_dir / "decisions.jsonl").open("w", encoding="utf-8")
-    tic, n_dec, lat, best_left = 0, 0, [], total_route
+    tic, n_dec, n_err, lat, best_left = 0, 0, 0, [], total_route
+    tok_in = tok_out = 0
+    cost = 0.0
     exe_seq = 0
-    info = {"model": name, "cmd": None, "probs": {}, "state": "", "lat": 0.0, "n": 0, "left": total_route}
+    obs = None
+    info = {"arm": arm, "seed": seed, "cmd": None, "probs": {}, "state": "", "lat": 0.0, "n": 0, "left": total_route}
     t_start = time.perf_counter()
     outcome = "timeout"
     try:
@@ -191,16 +190,21 @@ def main(argv=None):
                 d = brain.answers.get()
                 n_dec += 1
                 rec = {"id": f"{run_dir.name}-{n_dec:05d}", "group_id": f"{run_dir.name}-{n_dec // 20:04d}",
-                       "tic": tic, "obs_tic": d["obs_tic"], "state": d["state"], "latency": round(d["latency"], 3),
-                       "perception_s": round(d["perception_s"], 3), "error": d["error"],
-                       "pos": [round(obs.x), round(obs.y)], "health": obs.health}
-                if d["answer"]:
-                    a = d["answer"]
-                    rec.update(choice=a["choice"], confidence=a["confidence"], probabilities=a["probabilities"])
-                    exe.start(a["choice"])
+                       "tic": tic, "obs_tic": d["obs_tic"], "state": d["state"], "perception_s": round(d["perception_s"], 3),
+                       "error": d["error"], "pos": [round(obs.x), round(obs.y)], "health": obs.health}
+                dec = d["decision"]
+                if dec is not None:
+                    rec.update(choice=dec.choice, probabilities=dec.probabilities, latency=round(dec.latency, 3),
+                               input_tokens=dec.input_tokens, output_tokens=dec.output_tokens, cost_usd=dec.cost_usd)
+                    if dec.probabilities:
+                        rec["confidence"] = dec.probabilities.get(dec.choice)
+                    exe.start(dec.choice)
                     exe_seq = d["seq"]
-                    lat.append(d["latency"])
-                    info.update(cmd=a["choice"], probs=a["probabilities"], state=d["state"], lat=d["latency"], n=n_dec)
+                    lat.append(dec.latency)
+                    tok_in, tok_out, cost = tok_in + dec.input_tokens, tok_out + dec.output_tokens, cost + dec.cost_usd
+                    info.update(cmd=dec.choice, probs=dec.probabilities, state=d["state"], lat=dec.latency, n=n_dec)
+                else:
+                    n_err += 1
                 log.write(json.dumps(rec) + "\n")
             g.make_action(exe.step(obs), 1)
             tic += 1
@@ -217,11 +221,11 @@ def main(argv=None):
             delay = target - time.perf_counter()
             if delay > 0:
                 time.sleep(delay)
-        dead = g.is_player_dead()
-        if dead:
+        if g.is_player_dead():
             outcome = "died"
-        elif tic < args.timeout * TICRATE - 1:
+        elif g.get_episode_time() < g.get_episode_timeout() - 1:   # ended early and alive: level exit
             outcome = "exit"
+            best_left = 0.0
     except KeyboardInterrupt:
         outcome = "stopped"
     except Exception:
@@ -234,16 +238,43 @@ def main(argv=None):
             ffmpeg.stdin.close()
             ffmpeg.wait()
         wall = time.perf_counter() - t_start
-        summary = {"outcome": outcome, "game_seconds": round(tic / TICRATE, 1), "wall_seconds": round(wall, 1),
-                   "decisions": n_dec, "decisions_per_s": round(n_dec / max(wall, 1e-9), 2),
-                   "latency_median": round(statistics.median(lat), 3) if lat else None,
-                   "route_total": round(total_route), "best_route_left": round(best_left),
+        lat_sorted = sorted(lat)
+        summary = {"arm": arm, "seed": seed, "outcome": outcome,
                    "route_progress_pct": round(100 * (1 - best_left / total_route), 1),
-                   "model": name, "url": HOSTED_URL if args.teacher else args.url, "skill": args.skill}
+                   "game_seconds": round(tic / TICRATE, 1), "wall_seconds": round(wall, 1),
+                   "kills": obs.kills if obs else 0, "damage_taken": round(obs.damage_taken) if obs else 0,
+                   "health_end": round(obs.health) if obs else None,
+                   "decisions": n_dec, "errors": n_err, "decisions_per_s": round(n_dec / max(wall, 1e-9), 2),
+                   "latency_median": round(statistics.median(lat), 3) if lat else None,
+                   "latency_p90": round(lat_sorted[int(0.9 * (len(lat_sorted) - 1))], 3) if lat else None,
+                   "input_tokens": tok_in, "output_tokens": tok_out, "cost_usd": round(cost, 4),
+                   "route_total": round(total_route), "best_route_left": round(best_left),
+                   "engine": engine.describe(), "skill": skill, "map": map_name, "timeout_s": timeout,
+                   "compass": compass, "dry_run": dry_run, "commit": git_commit(), "run_dir": str(run_dir)}
         (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-        print(json.dumps(summary, indent=2))
-        print(f"run dir: {run_dir}")
         g.close()
+    return summary
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--arm", default="jev-local", choices=ARMS)
+    ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--wad", default=r"C:\tmp\jev-doom\wad\doom1.wad")
+    ap.add_argument("--map", default="E1M1")
+    ap.add_argument("--skill", type=int, default=3)
+    ap.add_argument("--local-url", default=LOCAL_URL)
+    ap.add_argument("--timeout", type=int, default=300, help="episode limit in seconds of game time")
+    ap.add_argument("--window", action="store_true", help="show the game window")
+    ap.add_argument("--record-video", action="store_true")
+    ap.add_argument("--runs", default="runs")
+    ap.add_argument("--no-compass", action="store_true")
+    ap.add_argument("--dry-run", action="store_true", help="mock engine with the arm's latency profile; free")
+    args = ap.parse_args(argv)
+    s = run(args.arm, args.seed, wad=args.wad, map_name=args.map, skill=args.skill, local_url=args.local_url,
+            timeout=args.timeout, window=args.window, record_video=args.record_video, runs_dir=args.runs,
+            compass=not args.no_compass, dry_run=args.dry_run)
+    print(json.dumps(s, indent=2))
 
 
 if __name__ == "__main__":

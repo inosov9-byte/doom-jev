@@ -96,42 +96,64 @@ def body(model: str, state: str, instructions: str) -> dict:
             "questions": {"cmd": {"type": "choice", "instructions": instructions, "criteria": dict(COMMANDS)}}}
 
 
+def wrong_direction(choice: str, credit: dict[str, float]) -> bool:
+    if not choice.startswith("turn_") or choice == "turn_around" or not any(k.startswith("turn_") for k in credit):
+        return False
+    want_left = any("left" in k for k in credit if credit[k] == 1.0)
+    return ("left" in choice) != want_left
+
+
+def score_decide(decide, min_gap: float = 0.0, cases=None) -> dict:
+    """Run every probe case through decide(state) -> choice. Returns overall and per-kind scores."""
+    cases = cases or make_cases()
+    per, wrong, last, rows = collections.defaultdict(list), 0, 0.0, []
+    for kind, state, credit in cases:
+        wait = min_gap - (time.monotonic() - last)
+        if wait > 0:
+            time.sleep(wait)
+        last = time.monotonic()
+        choice = decide(state)
+        score = credit.get(choice, 0.0)
+        per[kind].append(score)
+        wrong += wrong_direction(choice, credit)
+        rows.append({"kind": kind, "choice": choice, "score": score})
+    allscores = [x for v in per.values() for x in v]
+    return {"score": round(statistics.mean(allscores), 3), "wrong_direction_turns": wrong,
+            "by_kind": {k: round(statistics.mean(v), 3) for k, v in per.items()}, "rows": rows}
+
+
+def print_result(label: str, r: dict) -> None:
+    print(f"{label:34s} score {r['score']:.2f}  wrong-direction turns {r['wrong_direction_turns']}")
+    for kind, v in r["by_kind"].items():
+        print(f"    {kind:22s} {v:.2f}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", nargs="+", required=True)
+    ap.add_argument("--arms", nargs="+", help="experiment arms (engines.py), e.g. jev-local haiku")
+    ap.add_argument("--models", nargs="+", help="raw hosted Jev model ids (teacher selection)")
     ap.add_argument("--url", default=HOSTED_URL)
-    ap.add_argument("--instructions", default=None, help="file with alternative instructions text")
+    ap.add_argument("--instructions", default=None, help="file with alternative instructions text (--models only)")
     ap.add_argument("--min-gap", type=float, default=0.55)
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
-    instr = open(args.instructions, encoding="utf-8").read().strip() if args.instructions else INSTRUCTIONS
-    cases = make_cases()
-    client = JevClient(args.url, timeout=60)
     out = open(args.out, "a", encoding="utf-8") if args.out else None
-    for model in args.models:
-        per = collections.defaultdict(list)
-        wrong_dir = 0
-        last = 0.0
-        for kind, state, credit in cases:
-            wait = args.min_gap - (time.monotonic() - last)
-            if wait > 0:
-                time.sleep(wait)
-            last = time.monotonic()
-            ans, _ = client.classify_retry(body(model, state, instr))
-            score = credit.get(ans["choice"], 0.0)
-            per[kind].append(score)
-            if ans["choice"].startswith("turn_") and any(k.startswith("turn_") for k in credit):
-                want_left = any("left" in k for k in credit if credit[k] == 1.0)
-                if ("left" in ans["choice"]) != want_left and ans["choice"] != "turn_around":
-                    wrong_dir += 1
+    if args.arms:
+        from .engines import make_engine
+        for arm in args.arms:
+            eng = make_engine(arm)
+            r = score_decide(lambda st: eng.decide(st).choice, eng.min_gap)
+            print_result(arm, r)
             if out:
-                out.write(json.dumps({"model": model, "instructions": args.instructions or "default", "kind": kind,
-                                      "choice": ans["choice"], "score": score, "conf": ans["confidence"]}) + "\n")
-        allscores = [s for v in per.values() for s in v]
-        print(f"{model.split('/')[-1]:32s} [{args.instructions or 'default'}] score {statistics.mean(allscores):.2f}  "
-              f"wrong-direction turns {wrong_dir}")
-        for kind, v in per.items():
-            print(f"    {kind:22s} {statistics.mean(v):.2f}  (n={len(v)})")
+                out.write(json.dumps({"arm": arm, **{k: v for k, v in r.items() if k != "rows"}}) + "\n")
+    instr = open(args.instructions, encoding="utf-8").read().strip() if args.instructions else INSTRUCTIONS
+    client = JevClient(args.url, timeout=60)
+    for model in args.models or []:
+        r = score_decide(lambda st: client.classify_retry(body(model, st, instr))[0]["choice"], args.min_gap)
+        print_result(f"{model.split('/')[-1]} [{args.instructions or 'default'}]", r)
+        if out:
+            out.write(json.dumps({"model": model, "instructions": args.instructions or "default",
+                                  **{k: v for k, v in r.items() if k != "rows"}}) + "\n")
 
 
 if __name__ == "__main__":

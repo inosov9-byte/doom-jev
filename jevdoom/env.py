@@ -70,7 +70,7 @@ class Obs:
 
 def make_game(wad: str, map_name: str = "E1M1", skill: int = 3, visible: bool = True,
               resolution: str = "RES_640X480", cheats: bool = False, timeout_s: int = 900,
-              sound: bool = False) -> vzd.DoomGame:
+              sound: bool = False, seed: int | None = None) -> vzd.DoomGame:
     g = vzd.DoomGame()
     g.set_doom_game_path(wad)
     g.set_doom_map(map_name)
@@ -91,6 +91,8 @@ def make_game(wad: str, map_name: str = "E1M1", skill: int = 3, visible: bool = 
     g.set_sound_enabled(sound)
     if cheats:
         g.add_game_args("+sv_cheats 1")
+    if seed is not None:
+        g.set_seed(seed)                  # fixes the game's RNG (monster behaviour, damage rolls)
     g.init()
     return g
 
