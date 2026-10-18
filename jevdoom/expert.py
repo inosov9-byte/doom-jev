@@ -284,8 +284,10 @@ def decide(state: str) -> str:
     #    A lift wall (manual lift line, E1M8 before the Barons) is used once, then walked onto as it lowers.
     if ahead[1].startswith("ledge too high") and ahead[0] <= USE_REACH and f["blocked"]:
         return "use"
-    if ahead[1].startswith("lift") and ahead[0] <= USE_REACH:
-        return "forward_short" if f["last"] == "use" else "use"
+    if ahead[1].startswith("lift (raised)") and ahead[0] <= USE_REACH:
+        return "use"
+    if ahead[1].startswith("lift (lowering)"):
+        return "forward_short"                    # step on as it comes down
 
     # 8. unstick: sidestep toward the open side; if the sidestep was blocked too, back off
     if f["blocked"]:

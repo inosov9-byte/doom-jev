@@ -54,6 +54,8 @@ class Perception:
                             for i, l in enumerate(L) if l.special in S | G}
         self.locked = {i: KEY_DOORS[l.special] for i, l in enumerate(L) if l.special in KEY_DOORS}
         self.lift_walls = {i for i, l in enumerate(L) if LIFT_TRIGGERS.get(l.special) == "S" and l.back != -1}
+        self.lift_sectors_all = {sd for i in self.lift_walls for sd in (L[i].front, L[i].back)}
+        self.lift_floor_prev: dict[int, float] = {}  # lift sector -> floor at the previous description
         self.route: list | None = None
         self.idx = 0
         self.prev: Obs | None = None
@@ -149,7 +151,10 @@ class Perception:
                         state = f"opening, fully open in about {max(0.5, round(eta * 2) / 2):g} s"
                     return d, f"door ({state})", nukage, thing
                 if i in self.lift_walls:              # the raised lift itself (E1M8: special 62 before the Barons)
-                    return d, "lift (raised)", nukage, thing
+                    lift = nxt
+                    before = self.lift_floor_prev.get(lift)
+                    moving = before is not None and obs.heights.get(lift, (before, 0))[0] < before - 0.5
+                    return d, "lift (lowering)" if moving else "lift (raised)", nukage, thing
                 return d, "wall", nukage, thing
             if nf - cf > MAX_STEP:
                 return d, "ledge too high to climb", nukage, thing
@@ -512,11 +517,13 @@ class Perception:
             parts.append(note + (f", took {dmg:.0f} damage." if dmg > 0 else "."))
         self.prev = obs
         self.door_ceil_prev = {sec: obs.heights[sec][1] for sec in self.m.door_sectors if sec in obs.heights}
+        self.lift_floor_prev = {sec: obs.heights[sec][0] for sec in self.lift_sectors_all if sec in obs.heights}
         return " ".join(parts)
 
     def reset(self) -> None:
         self.route, self.idx, self.prev = None, 0, None
         self.door_ceil_prev = {}
+        self.lift_floor_prev = {}
         self.history = []
         self.stage = 0
         self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
