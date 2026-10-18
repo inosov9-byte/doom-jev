@@ -61,13 +61,23 @@ E1M1, held-out seeds 26-45:
 | DAgger round 1 (step 100) | 18/20 | 31.8 s | 2 stuck early (12.5%, 15.4%) |
 | Teacher | 20/20 | 23.5 s | — |
 
-E1M2: teacher 10/10 (median 60.1 s) after adding a shotgun detour to the route planner (it was 4/10 with the pistol only). Student: next.
+| Joint E1M1+E1M2 model | 20/20 | 29.9 s | — |
+
+E1M2, held-out seeds 26-45:
+
+| | Clears | Median time |
+|---|---|---|
+| E1M1-only student, zero-shot (6 seeds) | 0/6 | reached ~85% of the route; froze at the first mid-level switch |
+| Joint model | 13/20 | 75.4 s |
+| v5 (26 commands) | 12/20 | 79.2 s |
+| Teacher, instant (seeds 26-35) | 6/10 before the exit-room fix, 10/10 after | 58.7 s |
+
+E1M3 zero-shot (v5, 10 seeds): all die, at 9-32% of the route; the teacher dies at 25-27%.
 
 ## Next
 
-1. E1M2 transfer test: the E1M1 student on E1M2 with no E1M2 training.
-2. Joint E1M1 + E1M2 training, then the same held-out test on both maps.
-3. A level held out from training entirely, to measure transfer.
+1. Teacher and planner fixes on E1M3, E1M5, E1M6, E1M9 (see docs/HANDOFF.md).
+2. Joint training on every level the teacher clears; one level held out of training entirely, to measure transfer.
 
 ## Known limits
 

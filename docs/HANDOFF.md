@@ -4,11 +4,13 @@ Read this first in a new session. It says where the work stands, where things li
 
 ## Where it stands
 
-- **Goal set by Ivan:** master E1M1 (fast, reliable, real-time play) before other levels; then E1M2 as a joint training run; final comparison is student vs teacher side by side. Haiku is no longer part of the experiment.
-- **Student:** Qwen3.5-4B + LoRA behind `fast_server.py` (compact Jev prompt, one forward pass), ~0.1 s per decision.
-  - E1M1, held-out seeds 26-45: 18/20 clears (DAgger round 1, step-100 adapter `C:\tmp\jev-doom\models\v4-4b-d1\best`), median 31.8 s.
-  - E1M2: not trained yet.
-- **Teacher:** `expert.py` + progression planner. E1M1 20/20 (median 23.5 s); E1M2 10/10 (median 60.1 s) since the shotgun detour. E1M3 unsolved (the planner misses a one-way climb).
+- **Bar set by Ivan:** a student that clears a level about as often as its teacher is done; move to the next level. Haiku is no longer part of the experiment.
+- **Student:** Qwen3.5-4B + LoRA behind `fast_server.py` (compact Jev prompt, one forward pass), 26 commands (incl. turn-and-fire), snapshot at tic 5, ~0.1 s per decision.
+  - Joint model `C:\tmp\jev-doom\models\joint-a\best` (20 commands): E1M1 20/20 (29.9 s), E1M2 13/20 (75.4 s) on seeds 26-45.
+  - v5 `C:\tmp\jev-doom\models\v5\best` (26 commands, matches current code): E1M1 20/20 (34.5 s), E1M2 12/20.
+  - E1M3 zero-shot: dies at 9-32% of the route (teacher ~26%).
+- **Teacher:** `expert.py` + planner. E1M1 10/10 (19.5 s), E1M2 10/10 on seeds 26-35 (58.7 s).
+- **Later levels:** the planner solves E1M3, E1M5, E1M6, E1M9 (solids, stairs, live regrids). The teacher dies on all four: E1M3 dead-end damaging pit at ~26%, E1M5 shotgun-guy ambush at ~15%, E1M6 fights beside nukage at ~28%, E1M9 at ~35% (not checked). E1M4 and E1M7: no route found. E1M8: boss level, needs kill-target subgoals.
 
 ## Where things live
 
@@ -25,17 +27,19 @@ PC setup quirk: the Claude desktop app redirects AppData, which breaks uv-manage
 
 ## Next tasks, in order
 
-1. **E1M2 transfer test:** the E1M1 student on E1M2 seeds 26-45, no E1M2 training.
-2. **E1M2 data:** expert games seeds 6-25 and lagged-expert games seeds 6-15 (`data\expert-traj-e1m2`, `data\lag-traj-e1m2`), labelled with `dataset.py --expert ... --dedupe`.
-3. **Joint training:** E1M1 data (`rfdt-v4`, `dagger-v4a`) + E1M2 data, from the round-1 adapter or fresh; checks every 100 steps.
-4. **Live test on both maps,** seeds 26-45; DAgger round on E1M2 if below 90%.
-5. **Deliverables:** E1M2 share video when Jev clears it with a good time (2x upscale, overlay, `pc-progress\share\`); final student vs teacher side-by-side video (`jevdoom.sbs_video`).
-6. **Later:** speed (student ~4 decisions/s vs teacher ~6): CUDA graphs or `torch.compile` to cut the ~60 ms forward-pass floor, or the 2B student (70 ms); E1M3 planner; a level held out from training to measure transfer.
+1. **Dead-end warning in perception:** mark directions that drop into an area with no route back to the goal (reverse reachability on the stage grid) and keep the teacher out of them. Targets E1M3's pit, probably E1M6.
+2. **Teacher fixes per level:** E1M5 (shotgun guys before any shotgun), E1M6, E1M9; each level is a short chain of fixes. Re-check E1M1/E1M2 (seeds 26-30) after every rule change.
+3. **Planner on E1M4 and E1M7** (no route found; cause not investigated).
+4. **Data and joint training** on every level the teacher clears, mixed with E1M1/E1M2 (`scripts\build_v5.ps1` relabels all states); keep one level out of training entirely for the transfer test.
+5. **E1M8:** kill-target subgoals (compass to the Barons, done when dead) and an outcome that counts the Baron kills as success.
+6. **Later:** speed (student ~4.5 decisions/s vs teacher ~7.5): CUDA graphs or `torch.compile` against the ~60 ms forward-pass floor.
+
+Done on 2026-10-18: E1M1 reliability and DAgger, E1M2 transfer test and joint training, turn-and-fire commands, tic-5 snapshots, share videos and student-vs-teacher side-by-sides (`pc-progress\share\`).
 
 ## Commands
 
 ```powershell
-.\scripts\eval_student.ps1 -Adapter C:\tmp\jev-doom\models\v4-4b-d1\best -Out runs\eval-x [-Map E1M2] [-Video]
+.\scripts\eval_student.ps1 -Adapter C:\tmp\jev-doom\models\v5\best -Out runs\eval-x [-Map E1M2] [-Timeout 150] [-Video]
 .\scripts\serve_fast.ps1 -Adapter <adapter>      # serve only, port 8012
 C:\tmp\jev-doom\venv-rocm\Scripts\python.exe -m jevdoom.train_fast --data <jsonl...> --model Qwen/Qwen3.5-4B `
     --out C:\tmp\jev-doom\models\<run> --steps 300 --eval-every 100 --grad-ckpt [--init-adapter <adapter> --lr 1e-4] `
