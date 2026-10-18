@@ -226,6 +226,8 @@ class Perception:
                 p = (obs.x + d * math.cos(th), obs.y + d * math.sin(th))
                 if grid.sector_at(*p) < 0 or not grid.walkable_line((obs.x, obs.y), p):
                     continue
+                if any(_seg_point_dist((obs.x, obs.y), p, (t.x, t.y)) < 64 for t in threats):
+                    continue                          # the way out runs into a Baron's body (blocked strafes)
                 gap = min(math.dist(p, (t.x, t.y)) for t in threats)
                 open_dirs = sum(grid.walkable_line(p, (p[0] + 160 * math.cos(math.radians(45 * j)),
                                                        p[1] + 160 * math.sin(math.radians(45 * j))))
@@ -529,3 +531,9 @@ def _side(b: float, ahead: float = 7.5) -> str:
     if abs(b) > 165:
         return "behind"
     return f"{abs(b):.0f} deg {'left' if b > 0 else 'right'}"
+
+
+def _seg_point_dist(a, b, p) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / max(dx * dx + dy * dy, 1e-9)))
+    return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)

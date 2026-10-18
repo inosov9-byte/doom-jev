@@ -1,6 +1,7 @@
 # Serve a trained student with the fast server, run jev-local live on a seed range, stop the server.
 #   .\scripts\eval_student.ps1 -Adapter C:\tmp\jev-doom\models\v4-4b-d1\best -Out runs\eval-d1-best
 #   .\scripts\eval_student.ps1 -Adapter ... -Map E1M2 -First 1 -Last 10 -Video
+#   .\scripts\eval_student.ps1 -Adapter ... -Map E1M8 -First 1 -Last 10 -Timeout 240 -Loadout nominal
 param(
     [Parameter(Mandatory)][string]$Adapter,
     [Parameter(Mandatory)][string]$Out,
@@ -10,6 +11,7 @@ param(
     [int]$Last = 45,
     [int]$Timeout = 120,
     [switch]$Video,
+    [string]$Loadout = "",
     [string]$Root = "C:\tmp\jev-doom"
 )
 $repo = Split-Path $PSScriptRoot -Parent
@@ -31,6 +33,7 @@ try {
     if (-not $ready) { throw "server did not start; see $log.err" }
     $a = @("-m", "jevdoom.compare", "--arms", "jev-local", "--map", $Map, "--seeds") + ($First..$Last) + @("--timeout", $Timeout, "--out", $Out)
     if (-not $Video) { $a += "--no-video" }
+    if ($Loadout) { $a += @("--loadout", $Loadout) }
     & "$Root\venv\Scripts\python.exe" @a
 } finally {
     $own = Get-NetTCPConnection -LocalPort 8012 -State Listen -ErrorAction SilentlyContinue

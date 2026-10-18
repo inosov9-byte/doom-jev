@@ -223,6 +223,11 @@ def decide(state: str) -> str:
                 # The escape hint weighs openness: E1M8's star tips are dead ends. Move toward it without
                 # turning: back when it lies behind, strafe when it lies to a side.
                 a = f["escape"][1] if f["escape"] is not None else None
+                last = f["last"] or ""
+                if f["blocked"] and last.startswith(("strafe_", "back")):   # that way is shut: another one
+                    if last != "back" and f["rays"].get("behind", (0.0, ""))[0] > 60:
+                        return "back"
+                    return "strafe_right" if last.endswith("left") else "strafe_left"
                 if a is None:
                     return "back" if f["rays"].get("behind", (0.0, ""))[0] > 120 else _dodge(f)
                 if abs(a) >= 120:
