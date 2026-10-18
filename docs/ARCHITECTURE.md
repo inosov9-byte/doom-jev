@@ -1,6 +1,6 @@
 # What it took: Jev plays DOOM
 
-How a text classifier ended up playing DOOM E1M1 in real time on a laptop, what the system looks like, and what broke on the way. Numbers are measured on a Ryzen AI 9 HX 375 laptop (Radeon 890M iGPU, 32 GB) unless stated.
+How a text classifier ended up playing DOOM in real time, what the system looks like, and what broke on the way. Part 1 (2026-10-17) ran on a Ryzen AI 9 HX 375 laptop (Radeon 890M iGPU, 32 GB); no language model finished E1M1 there. Part 2 (2026-10-18, [below](#part-2-rtx-3090-the-student-clears-e1m1)) moved to an RTX 3090 PC, where a local 4B student clears E1M1 on 18 of 20 held-out seeds.
 
 ## The starting point
 
@@ -145,4 +145,73 @@ Distilling the rule-based expert into Qwen3.5-0.8B takes far longer on this lapt
 
 So the pipeline learns, after a long plateau, and the earlier runs were stopped just before that point would likely have arrived. A 450-step run on the full expert dataset was started afterwards (about 3.8 hours at 0.35 examples/s).
 
-Next step: the RTX 3090 Ti, where the same training runs an order of magnitude faster (estimate) and a larger student fits.
+The 450-step run ended the same way: held-out agreement 6.7% (always `forward`) at step 300, about 32 s per step. It was stopped.
+
+## Part 2: RTX 3090, the student clears E1M1
+
+Same perception, commands and teacher; a desktop with an RTX 3090 (24 GB). Perception v2 (body-width rays, barrels and pillars as obstacles, a "Recent commands ... moved N units" line) was already in place.
+
+### Where the time went
+
+Measured before training anything. A decision is one prefill forward pass; nothing is generated.
+
+| Model | Simple Jev server, stock prompt (~1,130 tokens) | Bare forward pass, 1,168 tokens | Bare forward pass, 300 tokens |
+|---|---|---|---|
+| Qwen3.5-0.8B | 172 ms | 62 ms | 63 ms |
+| Qwen3.5-2B | 183 ms | 88 ms | 62 ms |
+| Qwen3.5-4B | 337 ms | 225 ms | 77 ms |
+
+Two findings:
+
+- The server added ~100 ms: it runs a prefix pass and a branch pass per request, plus a cache copy.
+- The stock v1 template prints the 20 options twice, after the state: ~730 of ~1,130 tokens. Only ~185 tokens are the game state.
+
+`fastjev.py` uses a compact prompt (options A-T once, then the state, then `Answer:`, ~355 tokens), and `fast_server.py` scores it in one forward pass behind the same `/v1/classifier` API. Qwen3.5-4B: 337 → 90 ms. The method is still Jev (scores over option letters); the template and server are ours, and training uses the same template.
+
+Other candidates measured with the stock server (median, untrained agreement with the expert on 40 states): Qwen3-1.7B 228 ms (20/40), Gemma-4-E2B 262 ms (21/40), Qwen3-4B 429 ms (15/40), Qwen3.5-9B 452 ms (17/40). The standard-attention models are slower than Qwen3.5 at similar size. Meta's 2026 open models (Muse Spark Open 816B, Muse Glimmer 30B) are far too large for a 0.1 s decision.
+
+### Why the laptop student never learned, and the fix
+
+RFDT's laptop runs plateaued at "always forward". On the PC, a small trainer (`train_fast.py`: LoRA rank 32 on all linear layers, cross-entropy over the 20 option letters at the answer position, batch 16, lr 2e-4) learned at once: 2B reached 40% held-out agreement after 10 steps. Without gradient checkpointing, training spilled past 24 GB into system memory (52 s per step); with it, 2.6 s per step for 2B and ~5 s for 4B.
+
+Learning-rate and class-imbalance explanations for the laptop plateau were checked and ruled out (those runs used 2e-4 to 5e-4; `forward` was 22% of labels). The likely cause is the stock template plus far too few steps; it was not investigated further once the new trainer worked.
+
+### Data (v4, perception v2 text)
+
+| Source | States |
+|---|---|
+| Teleport situations: general, heading-aligned, route tail (`collect.py`) | 5,000 |
+| Instant expert games, seeds 6-25 | ~2,700 |
+| Expert delayed 0.2 s and 0.35 s, seeds 6-15: the messy positions a slightly late player reaches | ~2,400 |
+| Total, labelled by `expert.py` from the text | 10,155 |
+
+### Results
+
+Qwen3.5-4B, 400 steps (33 min): held-out agreement 22% → 77% (step 100) → 87% → 92% → 96%.
+
+| Test | Student | Teacher |
+|---|---|---|
+| Seeds 1-5 | 5/5, median 27.4 s, 89-91 ms per decision | 5/5, median 21.4 s |
+| Held-out seeds 26-45 | 14/20 | 20/20, median 23.5 s |
+
+The first five seeds overstated reliability. The six failures: three runs pressed `forward_short` into the same barrel at (1125, -2897) for 300 s, the barrel that stopped every Haiku run in part 1, while the expert would sidestep. Two died standing against a wall on the nukage floor near the exit. Positions the student reached that the training data barely contained.
+
+### DAgger
+
+The student played seeds 46-75 (17/30 clears, 12 stuck on the barrel). Every state it reached was labelled by the expert, deduplicated (a stuck run repeats one state hundreds of times; 6,000 rows → 2,248 unique), weighted 3x and added to the data. Training continued from the v4 adapter at lr 1e-4.
+
+| Student | Held-out seeds 26-45 |
+|---|---|
+| v4 | 14/20 |
+| DAgger round 1, step 100 | 18/20, median 31.8 s, no deaths, 2 stuck early |
+
+### E1M2: fixing the teacher first
+
+The teacher cleared E1M2 on 4 of 10 seeds. Every death was the same: two imps at claw range near the end, fought with the pistol while carrying 20 useless shells. A shotgun lies 152 units off the route but never comes into view. A health top-up rule did not help (4/10).
+
+The planner now inserts a weapon detour as a route stage when it costs at most 1,000 extra units: "Route to shotgun", done once the shotgun is held. E1M2's shotgun costs +961 units (about 2 s). E1M1 gets no detour (only a chaingun, +801, and E1M1 already works). Teacher on E1M2: 10/10, median 60.1 s.
+
+### Open questions
+
+- Transfer: does the E1M1 student play E1M2 better than chance before any E1M2 training?
+- Speed: the student makes ~4 decisions per second against the teacher's ~6 and is about 6-8 s slower per E1M1 clear.

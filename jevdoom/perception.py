@@ -149,6 +149,8 @@ class Perception:
             g = self.goal
             if g.kind == "key":
                 done = g.color in self.keys_held(obs)
+            elif g.kind == "item":
+                done = {"shotgun": obs.has_shotgun, "chaingun": obs.has_chaingun}.get(g.label, True)
             else:
                 done = any(abs(obs.heights.get(i, (f, c))[0] - f) > 4 or abs(obs.heights.get(i, (f, c))[1] - c) > 4
                            for i, (f, c, t) in enumerate(zip(self.m.floor, self.m.ceil, self.m.sector_tag))

@@ -30,7 +30,7 @@ from .env import blank_action, make_game, observe
 from .executor import Executor
 from .jev import LOCAL_URL
 from .perception import Perception
-from .progression import load_or_solve, stage_grids
+from .progression import load_or_solve, stage_grids, with_weapon_detours
 from .wadmap import NavGrid, exit_target, load_map, path_length
 
 TICRATE = 35
@@ -153,7 +153,7 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     run_dir.mkdir(parents=True, exist_ok=True)
     m = load_map(wad, map_name)
     start = next((float(t[0]), float(t[1])) for t in m.things if t[3] == 1)
-    goals = load_or_solve(m, start)
+    goals = with_weapon_detours(m, load_or_solve(m, start), start)
     grids = stage_grids(m, goals)
     grid = grids[-1]
     perc = Perception(grid, compass=compass, goals=goals, stage_grids=grids)

@@ -141,6 +141,35 @@ def load_or_solve(m: MapData, start: tuple[float, float]) -> list[Subgoal]:
     return goals
 
 
+DETOUR_WEAPONS = {2001: "shotgun"}   # thing type -> weapon worth a short detour (E1M2: the expert died
+                                     # in pistol-only imp fights next to a shotgun 152 units off its route)
+MAX_DETOUR = 1000.0                  # extra route units; E1M2 shotgun +961, ~2 s of running
+
+
+def with_weapon_detours(m: MapData, goals: list[Subgoal], start: tuple[float, float],
+                        max_detour: float = MAX_DETOUR) -> list[Subgoal]:
+    """Insert an 'item' subgoal for each detour weapon whose cheapest detour from a stage's route
+    is within max_detour. The stage is done once the weapon is held (perception.py)."""
+    from .wadmap import path_length
+    goals = list(goals)
+    for t in m.things:
+        name = DETOUR_WEAPONS.get(t[3])
+        if not name:
+            continue
+        pos = (float(t[0]), float(t[1]))
+        grids, here, best = stage_grids(m, goals), start, None
+        for i, (g, gr) in enumerate(zip(goals, grids)):
+            base, a, b = gr.plan(here, g.pos), gr.plan(here, pos), gr.plan(pos, g.pos)
+            if base and a and b:
+                extra = path_length(a) + path_length(b) - path_length(base)
+                if extra <= max_detour and (best is None or extra < best[1]):
+                    best = (i, extra)
+            here = g.pos
+        if best is not None:
+            goals.insert(best[0], Subgoal("item", name, pos, pos))
+    return goals
+
+
 def stage_grids(m: MapData, goals: list[Subgoal]) -> list[NavGrid]:
     """Planner grid for each stage: the world as it is before that subgoal."""
     grids, keys, opened = [], frozenset(), frozenset()

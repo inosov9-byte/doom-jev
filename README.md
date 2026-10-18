@@ -1,138 +1,102 @@
 # doom-jev
 
-Jev plays DOOM E1M1 in real time on a laptop, choosing every move itself.
+A language model plays DOOM in real time and chooses every move itself.
 
-Jev is [Simple Jev](https://github.com/featherless-ai/simple-jev), an open classifier API from Featherless. It wraps a language model so that, instead of writing text, the model returns a probability for each label in a fixed list. Here the list is 20 DOOM commands. A rule-based expert that reads the same text labels training situations; a small model behind a local Jev server is fine-tuned to copy it, then plays. The full story, including what broke, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The model is Qwen3.5-4B on a home GPU (RTX 3090). It reads a short text description of the game ("zombieman 367 away, 33 deg left; ahead 409 wall; route to exit: straight ahead") and picks one of 20 commands in about 90 ms, through Jev: [Simple Jev](https://github.com/featherless-ai/simple-jev)'s method of reading a model's next-token scores over a fixed list of options instead of letting it write text. It learned by copying a rule-based expert, then by having the expert correct the positions it reached on its own (DAgger).
 
-Status (2026-10-17): the pipeline works end to end and a distilled local model plays in real time. No model, teacher included, has finished E1M1 yet.
+Status (2026-10-18):
 
-Current experiment: **Jev vs Haiku** at real-time DOOM, same perception and commands, only the decision engine swapped. Design, arms and procedure: [EXPERIMENT.md](EXPERIMENT.md).
-
-## Two models, one Jev
-
-| | Teacher | Student |
+| Level | Student (Jev, Qwen3.5-4B) | Teacher (rules expert) |
 |---|---|---|
-| Model inside Jev | `featherless-ai/gemma-4-26B-A4B-classifier` | `Qwen/Qwen3.5-0.8B`, LoRA fine-tuned |
-| Runs on | Featherless hosted demo API | local GPU (Radeon 890M, ROCm) |
-| Decision latency | ~1.4 s, max 2 calls/s | ~0.7 s, no limit |
-| Role | labels training situations | plays the game |
+| E1M1 | 18/20 clears on held-out seeds, median 31.8 s, ~0.1 s per decision | 20/20, median 23.5 s |
+| E1M2 | not trained yet | 10/10, median 60.1 s |
 
-Both sides use the same Jev server code, prompt format and labels. Gemma never runs during play.
+Video of a 22.7 s E1M1 clear, with the command, latency and probabilities on screen: see `runs/compare-pc-v4` after a run, or the shared copy in the project's OneDrive transfer folder. The full story, including what failed: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Current state and next steps: [docs/HANDOFF.md](docs/HANDOFF.md). Experiment design: [EXPERIMENT.md](EXPERIMENT.md).
 
-### Training (offline)
-
-```
-ViZDoom E1M1 --teleport + random commands--> recorded situations (text)
-        --> hosted Jev (Gemma-4-26B): probabilities over 17 commands
-        --> RFDT (Simple Jev's trainer): LoRA on Qwen3.5-0.8B to match them
-        --> merged local model
-```
-
-### Play (real time, fully local)
+## How a command happens
 
 ```
 ViZDoom, 35 tics/s, never paused
-   |  observation
+   |  game state (engine variables + WAD map geometry)
    v
-perception.py   text: health, ammo, enemies in view (distance, angle, in crosshair),
-   |            raycast obstacles (wall / door state / ledge / exit switch), nukage,
-   |            route compass to the exit, off-screen attacker direction, last command result
+perception.py   text: health, ammo, weapon, keys; enemies and pickups in view (distance, angle,
+   |            in crosshair); body-width rays (wall / door state / ledge / barrel / pillar);
+   |            nukage; route compass to the next subgoal (key, switch, weapon, exit);
+   |            off-screen attacker direction; recent commands and how far they moved
    v
-local Jev       one choice over 17 commands
+local Jev       compact prompt (options A-T, state, "Answer:") -> one forward pass of Qwen3.5-4B + LoRA
+   |            -> softmax over the 20 option letters -> command
    v
-executor.py     plays the command as a fixed macro; the next command cancels it
+executor.py     plays the command as a fixed key macro; the next command cancels it
 ```
 
-The next decision waits until the previous command has taken effect, so Jev never decides on a view that predates its own last move.
-
-### What decides what
+No screen pixels are used. Code describes the situation and presses keys; the model makes every decision.
 
 | Component | Does | Decides? |
 |---|---|---|
-| Jev | picks every command | yes |
-| Perception | turns game state into text; facts only, no advice | no |
-| Route compass | bearing and distance to the exit along an A* path over the WAD map, like an automap; `--no-compass` disables it | no, a sensor reading |
-| Executor | replays a fixed button pattern per command | no |
-| Weapon select | shotgun if shells, else pistol, else fist | fixed rule, like Doom's auto-switch |
+| Jev (model) | picks every command | yes |
+| Perception | game state to text; facts only | no |
+| Route compass | bearing and distance to the next subgoal along an A* path over the WAD map, like an automap | no, a sensor reading |
+| Progression planner | order of subgoals: keys, switches, a short weapon detour, exit | no, it sets the compass target |
+| Executor | fixed button pattern per command | no |
+| Weapon select | best weapon with ammo (rocket launcher only for distant targets) | fixed rule, like Doom's auto-switch |
 
-Featherless's own [web DOOM demo](https://featherless.ai/simple-jev/cool-demo/doom/) works differently: a scripted route follower handles navigation, doors and the exit, and Jev picks only combat actions.
+## How it learns
 
-## Commands
-
-`forward`, `back`, `strafe_left`, `strafe_right` (20 tics, about 0.57 s; ~300 units forward or back and ~250 strafing, measured including the slide), `turn_left_5/15/30/45/90`, `turn_right_5/15/30/45/90`, `turn_around` (exact angles; 5 and 30 were added after measuring aim error: with 15/45/90 only, 38% of aiming turns could not get within 7 degrees of the target), `fire`, `use`.
-
-Turn amounts are in the label because a classifier picks labels and cannot output numbers. Moves have one length, close to the decision interval, because Doom momentum makes long timed moves overshoot.
-
-## Choosing the teacher
-
-`probe.py` scores teachers on 56 synthetic situations with unambiguous answers (aim, fire, follow route, open door, press exit, get unstuck; 60 since fine-aim cases were added). Wrong-direction turns score zero.
-
-| Teacher (hosted) | Instructions | Score | Aim at enemy |
-|---|---|---|---|
-| Qwen3.6-35B-A3B | default | 0.50 | 0.08 |
-| Qwen3.8-27B | default | 0.57 | 0.00 |
-| gemma-4-12B | default | 0.62 | 0.71 |
-| gemma-4-26B-A4B | default | 0.87 | 0.75 |
-| **gemma-4-26B-A4B** | **facts (`prompts/facts.txt`)** | **0.90** | **0.83** |
-
-The Qwen models follow the route compass even with an enemy in view. Known Gemma bias: it under-turns large right angles (90 to 180 degrees right usually gets `turn_right_45`).
-
-## Results so far
-
-| Run | Outcome |
-|---|---|
-| Zero-shot Qwen3.5-0.8B vs teacher | 8 to 10% agreement (chance is 7.7%) |
-| Student after 1 epoch, 1,600 labels (older Qwen teacher) | 81 to 85% held-out agreement, 0.69 s latency |
-| Hosted Qwen3.6-35B, live | died at 93 s, 47% of route |
-| Hosted gemma-4-26B, live | died at 145 s, 26% of route (slow reactions, door toggling) |
-| Local student (Qwen-taught), live | died at 43 s, 45% of route |
-
-Fixes made after these runs: decisions wait for the previous command to apply; doors report closed / opening (with time to open) / closing, since pressing use on an opening door closes it in vanilla DOOM; off-screen attacks report a direction, like the status-bar face.
-
-## Local speed, one classifier call
-
-Ryzen AI 9 HX 375, Radeon 890M, 32 GB, warm median:
-
-| Where | Model | Text | Screenshot |
-|---|---|---|---|
-| Local GPU (ROCm 7.2.1) | Qwen3.5-0.8B | 0.61 s | 0.78 s |
-| Local GPU | Qwen3.5-2B | 1.00 s | 1.27 s |
-| Local GPU | Qwen3.5-4B, short prompt | 2.7 s | 3.0 s |
-| Local CPU | Qwen3.5-0.8B | 4.3 s | 4.5 s |
-| Hosted demo | Qwen3.6-35B-A3B | 0.87 s | 0.9 to 1.0 s |
-
-Training with RFDT on the 890M: about 0.36 examples/s, 2.5 GiB peak with gradient checkpointing.
-
-## Run
-
-```powershell
-.\scripts\setup.ps1                     # venvs, WAD, Simple Jev, ROCm PyTorch under C:\tmp\jev-doom
-.\scripts\serve.ps1 -Model <model dir>  # local Jev on the GPU, port 8012
-C:\tmp\jev-doom\venv\Scripts\python.exe -m jevdoom.play --record-video
+```
+expert.py (rules, reads the same text) ──labels──► every recorded state
+   states from: teleport situations, expert games, slowed-down expert games, the student's own games (DAgger)
+        ──► train_fast.py: LoRA on Qwen3.5-4B, cross-entropy on the expert's option letter
+        ──► fast_server.py serves base model + adapter on localhost:8012
 ```
 
-Pipeline modules (`python -m jevdoom.<module>`):
+| Round | Data | Held-out agreement with expert | Live E1M1, seeds 26-45 |
+|---|---|---|---|
+| Untrained Qwen3.5-4B | — | 22% | — |
+| v4, 400 steps (33 min) | 10,155 expert-labelled states | 96% | 14/20 (stuck 3x on a barrel, 3 deaths) |
+| DAgger round 1, +100 steps | + 2,248 states from the student's own games | 96% | 18/20 |
+
+## Speed
+
+One decision, RTX 3090, 40 recorded states, median:
+
+| Model | Simple Jev server, stock prompt (~1,130 tokens) | fast_server, compact prompt (~355 tokens) |
+|---|---|---|
+| Qwen3.5-0.8B | 172 ms | — |
+| Qwen3.5-2B | 183 ms | 70 ms |
+| Qwen3.5-4B | 337 ms | 90 ms |
+| Qwen3.5-9B | 452 ms | — |
+
+The stock Simple Jev template lists the options twice after the state and its server runs two forward passes; `fastjev.py` lists them once before the state and scores in one pass. The rules expert, delayed artificially, shows why this matters: 5/5 clears at 0 s, 4/5 at 0.2 s, 2/5 at 0.35 s, 0/5 at 0.7 s.
+
+## Run (Windows, PowerShell)
+
+```powershell
+.\scripts\setup.ps1 -Cuda                     # venvs, WAD, Simple Jev, CUDA PyTorch, ffmpeg under C:\tmp\jev-doom
+.\scripts\build_data.ps1                      # E1M1 states: situations, expert and lagged-expert games
+python -m jevdoom.dataset --expert <state files> --dedupe --out data\rfdt-v4.jsonl
+python -m jevdoom.train_fast --data data\rfdt-v4.jsonl --model Qwen/Qwen3.5-4B --out C:\tmp\jev-doom\models\v4-4b --steps 400 --grad-ckpt
+.\scripts\eval_student.ps1 -Adapter C:\tmp\jev-doom\models\v4-4b\best -Out runs\eval-v4   # serve + live seeds 26-45
+python -m jevdoom.report runs\eval-v4         # HTML viewer: video synced to every decision
+```
+
+Use `C:\tmp\jev-doom\venv\Scripts\python.exe` for game-side modules and `C:\tmp\jev-doom\venv-rocm\Scripts\python.exe` (CUDA on the PC despite the name) for training and serving.
 
 | Module | Purpose |
 |---|---|
-| `collect` | record situations (teleport + random commands, no bot) |
-| `label` | label situations with the hosted teacher, resumable |
-| `dataset` | teacher labels to RFDT records (short student prompt, soft targets) |
-| `train_rfdt` | RFDT trainer with Windows-ROCm and last-position-logits adjustments |
-| `export_model` | merge LoRA adapter, add processor configs |
-| `evaluate` | student vs teacher agreement on held-out situations |
-| `probe` | score teacher candidates |
-| `play` | real-time run; writes `runs/<time>-<model>/` with `run.mp4`, `decisions.jsonl`, `summary.json` |
+| `perception`, `executor`, `play` | text description, key macros, real-time loop |
+| `expert` | rule-based teacher and reference arm |
+| `progression` | subgoal planner (keys, switches, lifts, weapon detours) |
+| `collect` | teleport situations (E1M1) |
+| `compare` | live runs per arm and seed, `--map`; writes `results.md` |
+| `dataset` | expert labels to training records, `--dedupe` |
+| `fastjev`, `fast_server`, `train_fast` | compact prompt, one-pass server, LoRA trainer |
+| `report`, `sbs_video` | HTML viewer, side-by-side videos |
+| `jev`, `train_rfdt`, `label`, `probe`, `evaluate` | Simple Jev client, RFDT trainer and hosted-teacher tools from the laptop phase |
 
-`data/`, `runs/`, `models/` are git-ignored. Heavy files live outside the repo under `C:\tmp\jev-doom`.
-
-## Notes
-
-- `train_rfdt.py` stubs `torch.distributed.tensor.DTensor` because the Windows ROCm PyTorch build ships without `torch.distributed`; on CUDA builds the stub is skipped.
-- `DOOM1.WAD` is the freely distributable shareware v1.9 IWAD; `setup.ps1` checks its MD5.
+`data/`, `runs/`, `models/` are git-ignored. Heavy files live under `C:\tmp\jev-doom`, outside the repo and OneDrive.
 
 ## Branches
 
-- `main`: the last state that ran end to end. Merge into it only after a live run confirms the change.
-- `phase/<name>`: one branch per phase of work, e.g. `phase/gemma-student`, `phase/cuda-3090`.
-- Datasets, models and runs are not in git; each run's `summary.json` records the model and settings used.
+- `main`: the last state that ran end to end. Merge only after a live run confirms.
+- `phase/<name>`: one branch per phase. Current: `phase/pc-student`.
