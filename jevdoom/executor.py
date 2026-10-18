@@ -16,7 +16,7 @@ MAX_TURN_PER_TIC = 30.0
 # Lower = overlap: the snapshot goes out while the previous command is still running, so the answer
 # lands sooner (JEVDOOM_SETTLE_TICS, experiment 2026-10-18; 8 was the fix for the laptop's
 # oscillation bug, which came from snapshots taken before a command had any effect).
-SETTLE_TICS = int(os.environ.get("JEVDOOM_SETTLE_TICS", "8"))
+SETTLE_TICS = int(os.environ.get("JEVDOOM_SETTLE_TICS", "5"))   # 5 adopted 2026-10-18: teacher at 0.1 s on E1M2 7/10 vs 5/10 at 8, 4/10 at 3
 MOVE_BUTTON = {"forward": B.MOVE_FORWARD, "forward_short": B.MOVE_FORWARD, "back": B.MOVE_BACKWARD,
                "strafe_left": B.MOVE_LEFT, "strafe_right": B.MOVE_RIGHT}
 
@@ -59,6 +59,8 @@ class Executor:
             return True
         if self.cmd in TURN_DEG:
             return abs(self.turn_left_deg) < 1e-6 and self.elapsed >= 1
+        if self.cmd in TURN_FIRE_DEG:      # turned and the first shot is out: look again at once
+            return abs(self.turn_left_deg) < 1e-6 and self.elapsed >= 2
         return self.elapsed >= SETTLE_TICS
 
     def step(self, obs: Obs) -> list[float]:

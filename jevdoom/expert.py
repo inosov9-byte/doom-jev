@@ -137,7 +137,10 @@ def decide(state: str) -> str:
 
     # 2. enemies within range (fist range when out of ammo). Near the exit or at low health,
     #    run instead: the switch ends the level, and a fight at 0.7 s per decision is a bad trade.
-    sprint = (f["route_left"] is not None and f["route_left"] < 700) or f["health"] < 30
+    #    E1M2: running past an imp and two zombiemen into the exit room killed the expert from behind
+    #    on most failed seeds, so the near-exit sprint only applies with at most one enemy within 300.
+    crowd = sum(1 for e in f["enemies"] if e["dist"] <= 300) >= 2
+    sprint = (f["route_left"] is not None and f["route_left"] < 700 and not crowd) or f["health"] < 30
     reach = (100 if sprint else ENGAGE) if has_ammo else FIST
     threats = [e for e in f["enemies"] if e["dist"] <= reach and e["angle"] is not None]
     if threats:
