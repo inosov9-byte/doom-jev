@@ -12,7 +12,7 @@ import math
 from collections import deque
 from dataclasses import dataclass
 
-from .wadmap import DOOR_SPECIALS, MapData, NavGrid, exit_target
+from .wadmap import DOOR_SPECIALS, SKILL_FLAG, MapData, NavGrid, exit_target
 
 KEY_DOORS = {26: "blue", 32: "blue", 27: "yellow", 34: "yellow", 28: "red", 33: "red"}
 KEY_THINGS = {5: "blue", 40: "blue", 6: "yellow", 39: "yellow", 13: "red", 38: "red"}
@@ -181,8 +181,8 @@ def with_weapon_detours(m: MapData, goals: list[Subgoal], start: tuple[float, fl
     goals = list(goals)
     for t in m.things:
         name = DETOUR_WEAPONS.get(t[3])
-        if not name:
-            continue
+        if not name or (len(t) > 4 and (not t[4] & SKILL_FLAG[3] or t[4] & 16)):
+            continue          # absent at skill 3 or multiplayer only (E1M3: the expert circled a missing shotgun)
         pos = (float(t[0]), float(t[1]))
         grids, here, best = stage_grids(m, goals), start, None
         for i, (g, gr) in enumerate(zip(goals, grids)):
