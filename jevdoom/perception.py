@@ -24,6 +24,9 @@ BODY_RADIUS = 16         # Doom player radius: a move is blocked by whatever eit
 LINE_OF_FIRE = os.environ.get("JEVDOOM_LINE_OF_FIRE", "1") == "1"
 SHOTGUN_REFIRE = 37      # tics between shotgun shots (Doom)
 HISTORY = 4              # commands listed in "Recent commands"
+# A drop the player cannot climb back out of toward the current goal (E1M3: the toxic ring around the
+# walkway; fights and dodges pushed the expert off the edge on every seed, and it died in the pit).
+DEAD_DROP = "drop with no way back"
 
 
 class Perception:
@@ -63,6 +66,8 @@ class Perception:
         self.history: list[tuple[str, float]] = []   # (command, units moved) for recent decisions
         self.door_ceil_prev: dict[int, float] = {}   # door sector -> ceiling height at the previous description
         self.live_grids: dict[int, NavGrid] = {}     # stage -> grid rebuilt from live sector heights
+        self._stand_cache: tuple = (None, 0.0)
+        self._reach: dict[tuple, tuple] = {}           # (id(grid), goal) -> (grid, cells the goal is reachable from)
         self.at_goal = False                          # close to the goal with a clear walk to it
         self.live_check_tic = -10**9
         self.plan_fail_tic = -10**9
@@ -84,7 +89,7 @@ class Perception:
         against a corner, and the player cannot move. Doors, switches and the exit keep the
         centre reading, since use acts on what is straight ahead."""
         c = self.ray(obs, rel_deg)
-        if c[1] != "wall" and not c[1].startswith("ledge") and c[1] != "open" and c[0] <= USE_RANGE * 2:
+        if c[1] not in ("wall", "open", DEAD_DROP) and not c[1].startswith("ledge") and c[0] <= USE_RANGE * 2:
             return c
         best, side = c, None
         for off, name in ((BODY_RADIUS, "left"), (-BODY_RADIUS, "right")):
@@ -140,6 +145,8 @@ class Perception:
             cur, nxt = (f, b) if den[i] < 0 else (b, f)
             cf, cc = obs.heights.get(cur, (self.m.floor[cur], self.m.ceil[cur]))
             nf, nc = obs.heights.get(nxt, (self.m.floor[nxt], self.m.ceil[nxt]))
+            if d < BODY_RADIUS + 8:           # within the player's box: it stands on the highest floor it touches
+                cf = max(cf, self._stand_floor(obs))
             if min(cc, nc) - max(cf, nf) < PLAYER_HEIGHT:
                 if self.special[i] in DOOR_SPECIALS or nxt in self.m.door_sectors:
                     door = nxt if nxt in self.m.door_sectors else cur
@@ -158,9 +165,46 @@ class Perception:
                 return d, "wall", nukage, thing
             if nf - cf > MAX_STEP:
                 return d, "ledge too high to climb", nukage, thing
+            if cf - nf > MAX_STEP and self._dead_end(ox + dx * (d + 12), oy + dy * (d + 12)):
+                return d, DEAD_DROP, nukage, thing
             if nukage is None and self.m.special[nxt] in DAMAGE_SECTORS:
                 nukage = d
         return float(MAX_RAY), "open", nukage, thing
+
+    def _dead_end(self, x: float, y: float) -> bool:
+        """True when (x, y) lies where the current goal cannot be reached from (reverse reachability
+        on the stage grid; the mask is computed once per grid)."""
+        stage = min(self.stage, len(self.goals) - 1)
+        grid = self.live_grids.get(stage) or self.stage_grids[stage]
+        key = (id(grid), self.goal.pos)
+        mask = self._reach.get(key)
+        if mask is None or mask[0] is not grid:
+            mask = self._reach[key] = (grid, grid.can_reach(self.goal.pos))
+        r, c = grid.to_cell(x, y)
+        if not (0 <= r < grid.h and 0 <= c < grid.w) or grid.blocked[r, c]:
+            return False
+        return not mask[1][r, c]
+
+    def _stand_floor(self, obs: Obs) -> float:
+        """Floor the player stands on: Doom holds it at the highest floor under any corner of its box, so
+        a player whose centre hangs over a drop still stands on the edge (E1M3: the centre over the toxic
+        pit made the walkway read as a ledge too high to climb, and the expert froze on the edge)."""
+        if self._stand_cache[0] == (obs.tic, obs.x, obs.y):
+            return self._stand_cache[1]
+        best = -1e9
+        for ox, oy in ((0, 0), (BODY_RADIUS, BODY_RADIUS), (BODY_RADIUS, -BODY_RADIUS),
+                       (-BODY_RADIUS, BODY_RADIUS), (-BODY_RADIUS, -BODY_RADIUS)):
+            sec = self.grid.sector_at(obs.x + ox, obs.y + oy)
+            if sec >= 0:
+                best = max(best, obs.heights.get(sec, (self.m.floor[sec], 0))[0])
+        self._stand_cache = ((obs.tic, obs.x, obs.y), best)
+        return best
+
+    def _in_pit(self, obs: Obs, x: float, y: float) -> bool:
+        """A dead-end spot below the player's floor (not just somewhere shut off by a door)."""
+        floor, _ = self._live_heights(obs)
+        ps, ts = self.grid.sector_at(obs.x, obs.y), self.grid.sector_at(x, y)
+        return ps >= 0 and ts >= 0 and floor[ps] - floor[ts] > MAX_STEP and self._dead_end(x, y)
 
     # -- cover ------------------------------------------------------------------
     COVER_FROM = ("BaronOfHell",)            # monsters a cover spot is reported for
@@ -409,7 +453,9 @@ class Perception:
         path = self.route
         target = path[min(self.idx + 1, len(path) - 1)]
         for j in range(min(self.idx + 14, len(path) - 1), self.idx, -2):
-            if grid.walkable_line(pos, path[j]):        # current stage: later stages may open doors still shut now
+            # Current stage: later stages may open doors still shut now. Clear of drop edges: a straight
+            # line hugging an edge took the expert off E1M3's walkway at the bends.
+            if grid.walkable_line(pos, path[j], keep_off_drops=True):
                 target = path[j]
                 break
         left = math.dist(pos, path[self.idx]) + path_length(path[self.idx:])
@@ -460,7 +506,8 @@ class Perception:
         items = sorted((p for p in obs.pickups if p.visible), key=lambda p: obs.dist_to(p.x, p.y))[:2]
         if items:
             parts.append("Pickups in view: " + "; ".join(
-                f"{PICKUP_NAMES[p.name]} {obs.dist_to(p.x, p.y):.0f} away, {_side(obs.bearing_to(p.x, p.y))}" for p in items) + ".")
+                f"{PICKUP_NAMES[p.name]} {obs.dist_to(p.x, p.y):.0f} away, {_side(obs.bearing_to(p.x, p.y))}"
+                + (", in a pit with no way back" if self._in_pit(obs, p.x, p.y) else "") for p in items) + ".")
 
         inc = self.incoming(obs)
         if inc:
@@ -483,6 +530,11 @@ class Perception:
             if nuk is not None and rel in (0, 30, -30) and (hazard is None or nuk < hazard[0]):
                 hazard = (nuk, name)
         parts.append("Obstacles: " + "; ".join(rays) + ".")
+        # Strafes move sideways, where no obstacle ray looks: report a dead-end drop there too.
+        side_drops = [f"{d:.0f} units {name}" for name, rel in (("90 left", 90), ("90 right", -90))
+                      for d, kind, _ in [self.ray(obs, rel)] if kind == DEAD_DROP and d < 300]
+        if side_drops:
+            parts.append("Drop with no way back " + ", ".join(side_drops) + ".")
         if hazard:
             parts.append(f"Toxic nukage floor {hazard[0]:.0f} units {hazard[1]}.")
 
