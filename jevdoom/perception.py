@@ -237,7 +237,7 @@ class Perception:
                 open_dirs = sum(grid.walkable_line(p, (p[0] + 160 * math.cos(math.radians(45 * j)),
                                                        p[1] + 160 * math.sin(math.radians(45 * j))))
                                 for j in range(8))
-                score = min(gap, 600.0) + 60.0 * open_dirs
+                score = min(gap, 350.0) + 80.0 * open_dirs       # past 350 units distance matters less than room
                 if best is None or score > best[0]:
                     best = (score, float(d), obs.bearing_to(*p))
         return None if best is None else (best[1], best[2])
