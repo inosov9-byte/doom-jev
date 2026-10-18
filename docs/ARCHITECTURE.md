@@ -211,7 +211,64 @@ The teacher cleared E1M2 on 4 of 10 seeds. Every death was the same: two imps at
 
 The planner now inserts a weapon detour as a route stage when it costs at most 1,000 extra units: "Route to shotgun", done once the shotgun is held. E1M2's shotgun costs +961 units (about 2 s). E1M1 gets no detour (only a chaingun, +801, and E1M1 already works). Teacher on E1M2: 10/10, median 60.1 s.
 
+### E1M2 transfer, then joint training
+
+The E1M1 student on E1M2 with no E1M2 training (6 seeds): 0 clears, median ~85% of the route. It took the red key and the shotgun detour and won ~10 fights, then froze at the first mid-level switch ("Route to switch: switch 50 away"), sidestepping into a ledge 200 times. E1M1 has no mid-level switches. On single decisions it already agreed with the expert on 95% of E1M2 states; the misses were rare and decisive.
+
+Joint training (E1M1 data + E1M1 DAgger + 10,368 E1M2 states, 400 steps from the DAgger adapter): held-out agreement 97.0%. Live, seeds 26-45: **E1M1 20/20** (median 29.9 s), **E1M2 13/20** (median 75.4 s). The instant teacher clears 6/10 of E1M2 seeds 26-35, so the student reached its teacher's level. Ivan's bar from here: a student at teacher level on a level is done.
+
+### Latency: the teacher at the student's speed, and two ways to cut its cost
+
+E1M2 punishes delay far more than E1M1: the teacher with 0.2 s per decision clears 1/10 (E1M1: 4/5).
+
+| Change | Teacher at 0.1 s delay, E1M2 seeds 26-35 |
+|---|---|
+| Baseline (snapshot 8 tics into a move) | 5/10 |
+| Snapshot at tic 5: inference overlaps the running command (Ivan's idea) | **7/10**, 4.84 vs 4.17 decisions/s |
+| Snapshot at tic 3 | 4/10: the previous command has barely started |
+
+54% of the teacher's E1M1 shots and 64% on E1M2 came right after a turn: two decisions per shot. Six commands `turn_{left,right}_{5,15,30}_fire` (turn on the first tic, then fire) do both in one, and release the next decision after the first shot. They are appended after the 20 existing commands, so trained students keep their option letters.
+
+### Teacher fixes found on E1M2 and later levels
+
+| Failure | Fix | Effect |
+|---|---|---|
+| Ran past an imp and two zombiemen into the E1M2 exit room (sprint mode near the exit) | sprint only with at most one enemy within 300 | E1M2 instant teacher 6/10 → 10/10 on seeds 26-35 |
+| Pressed use 60 times on a door raised by a remote trigger (E1M9) | no second use on a door still closed | |
+| Stood still while a demon bit it (E1M6) | sidestep-fire at demons/spectres within 110 | |
+
+With turn-and-fire, tic-5 snapshots and these rules: E1M1 instant teacher median 19.5 s (was 23.5 s), E1M2 10/10.
+
+### v5 student (26 commands)
+
+All perception-v2 states collected so far (35,351 after deduplication; 18,862 of them from the student's own games) relabelled by the new teacher, 600 steps from the joint adapter: held-out agreement 97.4%. Live, seeds 26-45: E1M1 20/20 (median 34.5 s), E1M2 12/20. Same as the joint model: at teacher level.
+
+### Planner fixes for E1M3-E1M9
+
+A teacher survey of E1M3-E1M9 showed the planner, not the fighting, blocking most levels.
+
+| Problem | Fix |
+|---|---|
+| Routes through pillars, torches and barrels: the grid modelled only walls (E1M9's plan went through a gap two torches close; also the E1M1 start barrel) | solid decorations present at skill 3 block their cells |
+| E1M3 "one-way climb": a stair builder (special 8) raises a chain of untagged sectors; the planner raised only the tagged first step | stair building follows Doom's rule (same floor texture, +8 per step). E1M3 solves: blue key, stair trigger, exit |
+| Waypoint line-of-sight checked on the final stage's grid, where later triggers have opened doors still shut now | checked on the current stage's grid |
+| Within 120 units of a goal the compass pointed straight at it, through wall corners (E1M2 exit, 99.5% stalls) | only with a clear walk to the goal's standing spot |
+| Map changed during play (trap doors, raised floors) | the stage grid is rebuilt from live sector heights when a non-door sector moves |
+| Detour to a shotgun that exists only on easy skills (E1M3) | detour weapons filtered by skill and multiplayer flags |
+
+| Level | Planner | Teacher (seeds 1-5) | Blocker |
+|---|---|---|---|
+| E1M3 | solved | dies at ~26% | drops into a dead-end damaging pit; no route back out |
+| E1M4, E1M7 | no route | — | not investigated yet |
+| E1M5 | solved | dies at ~15% | shotgun-guy ambush, pistol only |
+| E1M6 | solved | dies at ~28% | fights beside nukage |
+| E1M8 | no exit line | — | boss level: needs "kill target" subgoals |
+| E1M9 | solved | dies at ~35% | not investigated yet |
+
+E1M3 zero-shot (v5 student, never trained on it, 10 seeds): dies at 9-32% of the route (median ~17%), against the teacher's 25-27%.
+
 ### Open questions
 
-- Transfer: does the E1M1 student play E1M2 better than chance before any E1M2 training?
-- Speed: the student makes ~4 decisions per second against the teacher's ~6 and is about 6-8 s slower per E1M1 clear.
+- Transfer, properly: train on the levels the teacher clears and keep one level out of training entirely.
+- Speed: the student makes ~4.5 decisions per second against the teacher's ~7.5 and is 10-15 s slower per clear; the forward pass has a ~60 ms floor.
+- Without the route compass the model would need memory; a separate experiment.

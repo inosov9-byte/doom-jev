@@ -2,16 +2,21 @@
 
 A language model plays DOOM in real time and chooses every move itself.
 
-The model is Qwen3.5-4B on a home GPU (RTX 3090). It reads a short text description of the game ("zombieman 367 away, 33 deg left; ahead 409 wall; route to exit: straight ahead") and picks one of 20 commands in about 90 ms, through Jev: [Simple Jev](https://github.com/featherless-ai/simple-jev)'s method of reading a model's next-token scores over a fixed list of options instead of letting it write text. It learned by copying a rule-based expert, then by having the expert correct the positions it reached on its own (DAgger).
+The model is Qwen3.5-4B on a home GPU (RTX 3090). It reads a short text description of the game ("zombieman 367 away, 33 deg left; ahead 409 wall; route to exit: straight ahead") and picks one of 26 commands in about 0.1 s, through Jev: [Simple Jev](https://github.com/featherless-ai/simple-jev)'s method of reading a model's next-token scores over a fixed list of options instead of letting it write text. It learned by copying a rule-based expert, then by having the expert correct the positions it reached on its own (DAgger).
 
 Status (2026-10-18):
 
 | Level | Student (Jev, Qwen3.5-4B) | Teacher (rules expert) |
 |---|---|---|
-| E1M1 | 18/20 clears on held-out seeds, median 31.8 s, ~0.1 s per decision | 20/20, median 23.5 s |
-| E1M2 | not trained yet | 10/10, median 60.1 s |
+| E1M1 | 20/20 on held-out seeds 26-45, median 29.9 s, ~0.1 s per decision | 10/10, median 19.5 s |
+| E1M2 | 13/20, median 75.4 s | 10/10 on seeds 26-35, median 58.7 s (6/10 before the exit-room fix) |
+| E1M3 | not trained; zero-shot dies at 9-32% of the route | dies at ~26% (dead-end pit) |
+| E1M5, E1M6, E1M9 | not trained | planner solves them; the teacher dies at 15-35% |
+| E1M4, E1M7 | — | no route found yet |
 
-Video of a 22.7 s E1M1 clear, with the command, latency and probabilities on screen: see `runs/compare-pc-v4` after a run, or the shared copy in the project's OneDrive transfer folder. The full story, including what failed: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Current state and next steps: [docs/HANDOFF.md](docs/HANDOFF.md). Experiment design: [EXPERIMENT.md](EXPERIMENT.md).
+The student is at its teacher's level on E1M1 and E1M2; the next work is the teacher and planner on later levels.
+
+Videos (OneDrive transfer folder, `pc-progress/share`): a 22.7 s E1M1 clear and a 71.7 s E1M2 clear with the command, latency and probabilities on screen, and student-vs-teacher side-by-sides for both levels. The full story, including what failed: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Current state and next steps: [docs/HANDOFF.md](docs/HANDOFF.md). Experiment design: [EXPERIMENT.md](EXPERIMENT.md).
 
 ## How a command happens
 
