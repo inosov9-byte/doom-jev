@@ -35,7 +35,7 @@ def load_runs(folder: Path) -> list[dict]:
     return runs
 
 
-def build(folder: Path) -> Path:
+def build(folder: Path, title: str = "Jev vs Haiku: real-time DOOM E1M1") -> Path:
     runs = load_runs(folder)
     res = folder / "results.json"
     meta = json.loads(res.read_text()).get("meta", {}) if res.exists() else {}
@@ -46,7 +46,7 @@ def build(folder: Path) -> Path:
         if not pr.get("meta", {}).get("dry_run"):
             probe = pr.get("rows", probe)
     data = {"meta": meta, "aggregate": agg, "probe": probe, "runs": runs, "labels": ARM_LABEL}
-    html = TEMPLATE.replace("/*DATA*/null", json.dumps(data))
+    html = TEMPLATE.replace("/*DATA*/null", json.dumps(data)).replace("__TITLE__", title)
     out = folder / "index.html"
     out.write_text(html, encoding="utf-8")
     return out
@@ -77,7 +77,7 @@ select{background:var(--panel);color:var(--text);border:1px solid var(--line);bo
 .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;border:1px solid var(--line)}
 .exit{color:var(--move);border-color:var(--move)}.died{color:var(--fire);border-color:var(--fire)}.timeout{color:var(--use);border-color:var(--use)}
 </style></head><body>
-<header><h1>Jev vs Haiku: real-time DOOM E1M1</h1><span class="muted" id="meta"></span>
+<header><h1>__TITLE__</h1><span class="muted" id="meta"></span>
 <nav><button data-v="results" class="on">Results</button><button data-v="run">Run</button><button data-v="sbs">Side by side</button></nav></header>
 <main>
 <section id="v-results"></section>
@@ -142,8 +142,9 @@ results();if(D.runs.length)openRun(0);loadSide();
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("folder")
+    ap.add_argument("--title", default="Jev vs Haiku: real-time DOOM E1M1")
     args = ap.parse_args(argv)
-    print(build(Path(args.folder)))
+    print(build(Path(args.folder), args.title))
 
 
 if __name__ == "__main__":
