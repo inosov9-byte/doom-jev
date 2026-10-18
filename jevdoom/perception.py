@@ -242,7 +242,7 @@ class Perception:
         z = az + (bz - az) * t[idx]
         return bool(((z >= lo) & (z <= hi)).all())
 
-    def cover(self, obs: Obs, threat) -> tuple[float, float] | None:
+    def cover(self, obs: Obs, threat, reach: int = 256) -> tuple[float, float] | None:
         """Nearest spot (distance, bearing) the player can walk to straight that the threat (one monster
         or a list) cannot see: behind a pillar, a wall corner or below a ledge (E1M8's Barons)."""
         grid = self._stage_grid(obs)
@@ -253,7 +253,7 @@ class Perception:
             tsec = grid.sector_at(t.x, t.y)
             tz.append(floor[tsec] if tsec >= 0 else 0.0)
         best = None
-        for d in range(48, 257, 32):
+        for d in range(48, reach + 1, 32):
             for k in range(12):
                 th = math.radians(obs.angle + 30 * k)
                 p = (obs.x + d * math.cos(th), obs.y + d * math.sin(th))
@@ -532,7 +532,7 @@ class Perception:
             if es:
                 parts.append(f"Escape from {name}: {es[0]:.0f} units open, {_side(es[1])}.")
         elif len(shooters) >= 2:
-            cv = self.cover(obs, shooters)
+            cv = self.cover(obs, shooters, reach=320)
             parts.append(f"Cover from {len(shooters)} shooters: {cv[0]:.0f} units, {_side(cv[1])}." if cv
                          else f"Cover from {len(shooters)} shooters: none near.")
 
@@ -573,7 +573,10 @@ class Perception:
         if self.prev is not None and last_cmd:
             moved = math.hypot(obs.x - self.prev.x, obs.y - self.prev.y)
             dmg = obs.damage_taken - self.prev.damage_taken
-            blocked = last_cmd in ("forward", "back", "strafe_left", "strafe_right") and moved < 10
+            # A short step moves ~80 units; none at all means something is in the way (E1M3: 25 short steps
+            # into a wall at the exit room, standing in a shotgun guy's fire).
+            blocked = (last_cmd in ("forward", "back", "strafe_left", "strafe_right") and moved < 10
+                       or last_cmd == "forward_short" and moved < 3)
             self.history = (self.history + [(last_cmd + (" (blocked)" if blocked else ""), moved)])[-HISTORY:]
             if len(self.history) >= 2:
                 parts.append("Recent commands, oldest first: " + ", ".join(c for c, _ in self.history)

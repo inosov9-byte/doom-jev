@@ -27,6 +27,9 @@ ARMOR_ITEMS = ("green armor", "blue armor")  # absorb a third / half of every hi
 HITSCAN = ("zombieman", "shotgun guy")
 HITSCAN_ENGAGE = 500
 SHOOTERS = HITSCAN + ("imp",)
+GROUP_COVER_NEAR = 200
+EDGE = 120                     # a drop with no way back this close: no dodging, no long-range fights
+GROUP_ENGAGE = 650
 MELEE = ("demon", "spectre")   # bite only: keep them from reaching the player
 MELEE_ENGAGE = 450             # demons are fought from this far: they come to the player anyway
 BOSSES = ("baron",)            # fought at any range when in view
@@ -42,8 +45,10 @@ DEAD_DROP = "drop with no way back"
 # degrees sideways, which the 60 degree ray sees at a slant.
 # A run also keeps sliding the old way after the next turn (Doom momentum): near a drop on either side
 # the expert walks (E1M3 seed 1: ran along the walkway, turned at the bend, slid into the pool).
-MOVE_REACH = {"forward": (("ahead", 150), ("30 left", 120), ("30 right", 120), ("60 left", 90), ("60 right", 90),
-                          ("90 left", 70), ("90 right", 70)), "forward_short": (("ahead", 90),), "back": (("behind", 200),),
+# Decisions 100 ms late add ~50 units of travel at a run (E1M3: the late expert ran off the walkway's
+# bend on three seeds of four with 150 units of clearance ahead).
+MOVE_REACH = {"forward": (("ahead", 240), ("30 left", 180), ("30 right", 180), ("60 left", 110), ("60 right", 110),
+                          ("90 left", 80), ("90 right", 80)), "forward_short": (("ahead", 90),), "back": (("behind", 200),),
               **{f"{pre}strafe_{side}": ((f"90 {side}", 180), (f"60 {side}", 200))
                  for pre in ("", "fire_") for side in ("left", "right")}}
 
@@ -64,7 +69,7 @@ def _angle(text: str) -> float | None:
 def parse_state(s: str) -> dict:
     f: dict = {"enemies": [], "pickups": [], "rays": {}, "route": None, "route_left": None, "exit_near": None,
                "attacker": None, "blocked": False, "last": None, "damage": 0, "health": 100,
-               "bullets": 0, "shells": 0, "weapon": "pistol"}
+               "bullets": 0, "shells": 0, "weapon": "pistol", "moved": 0}
     m = re.search(r"Health (\d+), armor (\d+)", s)
     f["health"], f["armor"] = (int(m.group(1)), int(m.group(2))) if m else (100, 0)
     m = re.search(r"Weapon: (\w+); (\d+) bullets, (\d+) shells", s)
@@ -123,6 +128,7 @@ def parse_state(s: str) -> dict:
     m = re.search(r"Last command: (\w+), moved (\d+) units( \(blocked\))?(, took (\d+) damage)?", s)
     if m:
         f["last"], f["blocked"] = m.group(1), bool(m.group(3))
+        f["moved"] = int(m.group(2))
         f["damage"] = int(m.group(5)) if m.group(5) else 0
     return f
 
@@ -213,7 +219,10 @@ def _decide(f: dict) -> str:
 
     # 1b. a fireball on course to hit: sidestep off its line first (E1M8: 585 damage taken from Barons
     #     at 300+ units, all fireballs). Blocked that way: the other side.
-    if f["incoming"] is not None:
+    #     Not at the edge of a drop with no way back: a fireball costs 3-24 health, the pit the whole run
+    #     (E1M3's walkway: dodges at 100 ms lag carried the expert over the edge on most seeds).
+    edge = min(f["drops"].values(), default=1e9) < EDGE
+    if f["incoming"] is not None and not edge:
         side = f["incoming"][1]
         other = "right" if side == "left" else "left"
         if f["rays"].get(f"60 {side}", (1500.0, ""))[0] < 40 and f["rays"].get(f"60 {other}", (0.0, ""))[0] >= 40:
@@ -230,10 +239,16 @@ def _decide(f: dict) -> str:
     # Demons close the gap fast and only bite: shoot them on the way in rather than walking into them
     # (E1M8's opening: the expert walked into the barrel field to meet the pack).
     melee_reach = MELEE_ENGAGE if has_ammo and not sprint else 0
-    # Not from the edge of a drop with no way back: stopping to aim on E1M3's narrow walkway left the
-    # 100 ms-late expert sliding over the edge into the toxic pit (two seeds of four). Keep walking there.
-    edge = min(f["drops"].values(), default=1e9) < 120
-    hitscan_reach = HITSCAN_ENGAGE if has_ammo and not sprint and not edge else 0
+    # Not from the edge of a drop with no way back either: stopping to aim on E1M3's narrow walkway left
+    # the 100 ms-late expert sliding over the edge into the toxic pit (two seeds of four). Keep walking.
+    # Two or more shooters in view with cover a few steps away: fight them from there, out to the range a
+    # shotgun still hits, instead of walking into the open (E1M4's opening room: four gunmen, 71 -> 8
+    # in five seconds once the expert stood in the middle of it).
+    shooters = [e for e in f["enemies"] if e["kind"] in SHOOTERS]
+    held = f["group_cover"] is not None and f["group_cover"][0] <= GROUP_COVER_NEAR and len(shooters) >= 2
+    hitscan_reach = (GROUP_ENGAGE if held else HITSCAN_ENGAGE) if has_ammo and not sprint and not edge else 0
+    if sprint and has_ammo and not edge:
+        hitscan_reach = 300        # bullets outrun a sprint: a near gunman is fought even then
     threats = [e for e in f["enemies"] if e["angle"] is not None
                and (e["dist"] <= reach or (e["kind"] in BOSSES and has_ammo)
                     or (e["kind"] in HITSCAN and e["dist"] <= hitscan_reach)
@@ -267,12 +282,12 @@ def _decide(f: dict) -> str:
             if a is not None and abs(a) >= 30:
                 return turn_toward(a)
             return "forward" if d > 120 else "forward_short"
-        # Two or more gunmen or imps with a line of fire and they are hitting: out of their sight while the
-        # shotgun reloads, back out to fire when it is ready. They follow one at a time (E1M4's opening room:
+        # Two or more gunmen or imps with a line of fire: out of their sight while the shotgun reloads (with
+        # bullets, whenever they hit), back out to fire when it is ready. They follow one at a time (E1M4's opening room:
         # 71 health gone in five seconds standing in the open). Moves keep facing them: no turning away.
-        shooters = [e for e in f["enemies"] if e["kind"] in SHOOTERS]
         if (t["kind"] not in BOSSES and f["group_cover"] is not None and len(shooters) >= 2
-                and (f["damage"] > 0 or f["health"] < 50) and (f["reload"] > AIM_LEAD or f["health"] < 30)):
+                and (f["reload"] > AIM_LEAD
+                     or (f["damage"] > 0 and (f["weapon"] != "shotgun" or f["health"] < 30)))):
             move = _move_toward(*f["group_cover"])
             if not _unsafe(f, move):
                 return move
@@ -352,11 +367,13 @@ def _decide(f: dict) -> str:
     health = [p for p in f["pickups"] if p["name"] in HEALTH_ITEMS and p["angle"] is not None and not _cut_off(f, p)
               and ((p["dist"] < (600 if f["health"] < 40 else 300) and f["health"] < 60)
                    or (p["dist"] < 300 and f["health"] + HEALTH_GAIN[p["name"]] <= 100))]
-    health += [p for p in f["pickups"] if p["name"] in ARMOR_ITEMS and p["angle"] is not None and p["dist"] < 600
+    health += [p for p in f["pickups"] if p["name"] in ARMOR_ITEMS and p["angle"] is not None and p["dist"] < 900
                and f["armor"] < 50 and not _cut_off(f, p)]
     ammo = [p for p in f["pickups"] if p["name"] in AMMO_ITEMS and p["angle"] is not None and p["dist"] < 600
             and (not has_ammo or low_shells) and not _cut_off(f, p)]
-    items = health if health and (f["health"] < 40 or not ammo) else ammo
+    # Health and armor first unless out of ammo altogether (E1M4: low on shells, the expert walked past
+    # blue armor 460 units away to fetch a shotgun, then died at 23 health).
+    items = health if health and (f["health"] < 40 or has_ammo or not ammo) else ammo
     if items:
         p = min(items, key=lambda p: p["dist"])
         return _go_to(p["angle"], p["dist"])
@@ -367,8 +384,10 @@ def _decide(f: dict) -> str:
     #     fireball or pellet set them off (57-58 health gone at once, three seeds).
     near_barrel = min((d for k, (d, kind) in f["rays"].items() if k != "ahead" and kind.startswith("barrel")),
                       default=1500.0)
+    # Not with an enemy in view or the shotgun reloading: standing to wait for the shot is a free target
+    # (E1M4: at 23 health the expert stopped to shoot a barrel while an imp threw fireballs).
     if (ahead[1].startswith("barrel") and BARREL_BLAST + 20 <= ahead[0] <= 400 and near_barrel >= 200 and has_ammo
-            and route is not None and abs(route) < 20):
+            and route is not None and abs(route) < 20 and not f["enemies"] and f["reload"] <= RELOAD_DODGE):
         return "fire"
     # 5. doors on the way
     # A door still closed right after "use" does not open by hand (E1M9: a sector raised by a trigger
@@ -417,6 +436,12 @@ def _flip_flop(f: dict) -> bool:
 def decide(state: str) -> str:
     f = parse_state(state)
     cmd = _decide(f)
+    # Still sliding from a run toward a drop: brake. Doom momentum carries a run ~150 units after the
+    # next command, and a turn does not stop it (E1M3: turned at the walkway's bend mid-slide, fell in).
+    if (f["last"] == "forward" and f["moved"] >= 70 and cmd != "back"
+            and min(f["drops"].get(r, 1e9) for r in ("ahead", "30 left", "30 right")) < 200
+            and f["rays"].get("behind", (0.0, ""))[0] > 60 and not _unsafe(f, "back")):
+        return "back"
     # Turning back and forth beside a drop (E1M3 seed 1: 1.5 s of left-right turns at the pool's corner
     # while being shot): break it with a short step where there is room.
     if cmd.startswith("turn_") and not cmd.endswith("_fire") and _flip_flop(f):
