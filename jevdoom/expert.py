@@ -22,7 +22,8 @@ HEALTH_ITEMS = ("stimpack", "medikit", "health bonus")
 MELEE = ("demon", "spectre")   # bite only: keep them from reaching the player
 MELEE_ENGAGE = 450             # demons are fought from this far: they come to the player anyway
 BOSSES = ("baron",)            # fought at any range when in view
-BOSS_NEAR, BOSS_FAR = 300, 500  # Baron kiting band
+BOSS_NEAR, BOSS_FAR = 260, 450
+RELOAD_DODGE = 0.2             # seconds of shotgun reload worth a sidestep instead of a fire  # Baron kiting band
 COVER_HEALTH = 70             # below this, a hit from a boss sends the expert behind cover
 BARREL_BLAST = 160             # barrel explosion radius is 128; never shoot one closer than this
 KILL_GOALS = ("baron of hell",)
@@ -69,6 +70,10 @@ def parse_state(s: str) -> dict:
             r = re.match(r"\s*(ahead|behind|\d+ left|\d+ right) (open|(\d+) (.+))", part)
             if r:
                 f["rays"][r.group(1)] = (1500.0, "open") if r.group(2) == "open" else (float(r.group(3)), r.group(4))
+    m = re.search(r"Shotgun reloading, ready in ([\d.]+) s", s)
+    f["reload"] = float(m.group(1)) if m else 0.0
+    m = re.search(r"Escape from [a-z ]+: (\d+) units open, ([^.]+)\.", s)
+    f["escape"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     m = re.search(r"Cover from [a-z ]+: (\d+) units, ([^.]+)\.", s)
     f["cover"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     f["goal"] = "exit"
@@ -104,6 +109,16 @@ def turn_toward(angle: float) -> str:
     side = "left" if angle > 0 else "right"
     step = min(STEPS, key=lambda st: abs(abs(angle) - st))
     return f"turn_{side}_{step}"
+
+
+def _dodge(f: dict) -> str:
+    """Sidestep while the weapon reloads: keep going the same way while there is room (a projectile
+    is dodged by leaving its line, not by stepping back and forth), else the open side."""
+    last = f["last"] or ""
+    for side in ("left", "right"):
+        if last.endswith("strafe_" + side) and f["rays"].get(f"60 {side}", (0.0, ""))[0] > 96:
+            return "strafe_" + side
+    return _open_side(f, "strafe_")
 
 
 def _open_side(f: dict, prefix: str = "") -> str:
@@ -184,9 +199,32 @@ def decide(state: str) -> str:
             # Baron (E1M8): every hit the expert took came within 250 units (claws, fireballs too close
             # to dodge), none beyond. Kite: back off inside 300, strafe-fire at 300-500, close in beyond.
             if t["dist"] < BOSS_NEAR:
-                return "back" if f["rays"].get("behind", (0.0, ""))[0] > 120 else _open_side(f, "fire_strafe_")
+                # Too close: retreat while reloading, but a ready shotgun fires (point-blank is full
+                # damage; cornered against a wall the expert strafed under two Barons with 20 shells left).
+                if f["reload"] <= RELOAD_DODGE:
+                    if t["crosshair"]:
+                        return "fire"
+                    turn = turn_toward(t["angle"])
+                    return turn + "_fire" if turn.endswith(("_5", "_15", "_30")) else turn
+                # Reloading: back off facing them (running backwards is as fast as forwards, a Baron walks
+                # at half that). Against a wall, strafe toward the open side the escape hint names; never
+                # turn away (the expert spun between escape turns and "shot from out of view" turns).
+                if f["rays"].get("behind", (0.0, ""))[0] > 120:
+                    return "back"
+                a = f["escape"][1] if f["escape"] is not None else None
+                if a is not None and abs(a) >= 20:
+                    return "strafe_left" if a > 0 else "strafe_right"
+                return _dodge(f)
             if t["crosshair"]:
-                return _open_side(f, "fire_strafe_") if t["dist"] <= BOSS_FAR else "forward_short"
+                if t["dist"] > BOSS_FAR:
+                    return "forward_short"
+                # Shoot standing when the shotgun is ready, dodge while it reloads: fire_strafe ran the aim
+                # off a Baron at 200 units (23 of 63 pellets hit), and a fire during the reload is wasted.
+                return _dodge(f) if f["reload"] > RELOAD_DODGE else "fire"
+            if f["reload"] > RELOAD_DODGE:
+                return _dodge(f) if abs(t["angle"]) < 30 else turn_toward(t["angle"])
+        if t["crosshair"] and f["reload"] > RELOAD_DODGE and t["dist"] > 110:
+            return _dodge(f)                               # shotgun reloading: move instead of a wasted fire
         if t["crosshair"]:
             if f["damage"] > 0 and "fire" in (f["last"] or ""):
                 return _open_side(f, "fire_strafe_")       # getting hit while shooting: dodge and keep firing

@@ -12,6 +12,7 @@ from .env import B, BI, Obs, blank_action
 import os
 
 MAX_TURN_PER_TIC = 30.0
+SHOT_WAIT = 40          # a fire command holds the trigger until its shot is out, at most this many tics
 # A move/fire/use counts as applied after this many tics; the next decision's snapshot is taken then.
 # Lower = overlap: the snapshot goes out while the previous command is still running, so the answer
 # lands sooner (JEVDOOM_SETTLE_TICS, experiment 2026-10-18; 8 was the fix for the laptop's
@@ -27,13 +28,16 @@ class Executor:
         self.left = 0
         self.elapsed = 0
         self.turn_left_deg = 0.0
+        self.ammo0 = None          # ammo when a fire command started; a drop means the shot went out
+        self.shot = False
 
     def start(self, cmd: str) -> None:
         self.cmd = cmd
         self.elapsed = 0
+        self.ammo0, self.shot = None, False
         self.turn_left_deg = float(TURN_DEG.get(cmd, TURN_FIRE_DEG.get(cmd, 0)))
         if cmd in TURN_FIRE_DEG:
-            self.left = FIRE_TICS + 1                 # one tic to turn (at most 30 degrees), then fire
+            self.left = SHOT_WAIT + 1                 # one tic to turn (at most 30 degrees), then fire
         elif cmd in TURN_DEG:
             self.left = int(abs(self.turn_left_deg) // MAX_TURN_PER_TIC) + 2
         elif cmd == "forward_short":
@@ -43,7 +47,7 @@ class Executor:
         elif cmd.startswith("fire_strafe"):
             self.left = MOVE_TICS
         elif cmd == "fire":
-            self.left = FIRE_TICS
+            self.left = SHOT_WAIT
         else:
             self.left = USE_TICS
 
@@ -59,13 +63,26 @@ class Executor:
             return True
         if self.cmd in TURN_DEG:
             return abs(self.turn_left_deg) < 1e-6 and self.elapsed >= 1
-        if self.cmd in TURN_FIRE_DEG:      # turned and the first shot is out: look again at once
-            return abs(self.turn_left_deg) < 1e-6 and self.elapsed >= 2
+        if self.cmd in TURN_FIRE_DEG or self.cmd == "fire":
+            # Hold the trigger until the shot is out: a fire replaced after 6 tics fell inside the
+            # shotgun's 37-tic reload half the time (E1M8: 5 shells in 10 s against Barons).
+            fist = self.ammo0 is not None and self.ammo0[0] == 1          # no ammo to watch
+            return (abs(self.turn_left_deg) < 1e-6 and (self.shot or (fist and self.elapsed >= SETTLE_TICS))
+                    or self.elapsed >= SHOT_WAIT)
         return self.elapsed >= SETTLE_TICS
+
+    @staticmethod
+    def _ammo(obs: Obs) -> float:
+        return {3: obs.shells, 5: obs.rockets}.get(obs.weapon, obs.bullets if obs.weapon in (2, 4) else 0)
 
     def step(self, obs: Obs) -> list[float]:
         a = blank_action()
         self._weapon(obs, a)
+        if self.ammo0 is None:
+            self.ammo0 = (obs.weapon, self._ammo(obs))
+        elif not self.shot and (obs.weapon != self.ammo0[0] or self._ammo(obs) < self.ammo0[1]):
+            self.shot = obs.weapon == self.ammo0[0]
+            self.ammo0 = (obs.weapon, self._ammo(obs))
         if self.left <= 0 or self.cmd is None:
             return a
         self.left -= 1
@@ -97,17 +114,13 @@ class Executor:
 
     @staticmethod
     def _weapon(obs: Obs, a) -> None:
-        # A fixed rule, not a decision: the best weapon with ammo. The chaingun for enemies beyond
-        # 350 units (keep it down to 300). The rocket launcher only while
+        # A fixed rule, not a decision: the best weapon with ammo. The rocket launcher only while
         # every visible enemy is far enough away that the blast cannot reach the player
         # (switch to it at 300+ units, keep it down to 200), never with nothing in view.
         near = min((obs.dist_to(m.x, m.y) for m in obs.monsters if m.visible), default=None)
         safe = near is not None and near >= (200 if obs.weapon == 5 else 300)
         if obs.has_launcher and obs.rockets > 0 and safe:
             want = 5
-        elif obs.has_chaingun and obs.bullets >= 20 and near is not None and (near > (300 if obs.weapon == 4 else 350)
-                                                                             or obs.shells == 0):
-            want = 4      # far targets: the shotgun's spread wastes most pellets beyond ~300 units
         elif obs.has_shotgun and obs.shells > 0:
             want = 3
         elif obs.has_chaingun and obs.bullets > 0:

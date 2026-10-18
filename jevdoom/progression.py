@@ -239,6 +239,43 @@ def with_weapon_detours(m: MapData, goals: list[Subgoal], start: tuple[float, fl
     return goals
 
 
+# Supplies swept before a boss (E1M8: three boxes of shells, armor, a medikit and a soulsphere lie
+# off the route; the expert met two Barons with 23 shells and died having dealt ~700 of 2000).
+SUPPLIES = {2049: "box of shells", 2018: "green armor", 2012: "medikit", 2013: "soulsphere"}
+MAX_SUPPLY_DETOUR = 1500.0
+
+
+def with_supply_detours(m: MapData, goals: list[Subgoal], start: tuple[float, float],
+                        max_detour: float = MAX_SUPPLY_DETOUR) -> list[Subgoal]:
+    """Before the first kill subgoal, visit every supply whose detour from that stage's route is
+    within max_detour, in nearest-neighbour order. The visit is done on arrival (perception.py)."""
+    from .wadmap import path_length
+    k = next((i for i, g in enumerate(goals) if g.kind == "kill"), None)
+    if k is None:
+        return goals
+    gr = stage_grids(m, goals, strict_lifts=True)[k]
+    here = goals[k - 1].pos if k else start
+    base = gr.plan(here, goals[k].pos)
+    if not base:
+        return goals
+    base_len, todo = path_length(base), []
+    for t in m.things:
+        name = SUPPLIES.get(t[3])
+        if not name or (len(t) > 4 and (not t[4] & SKILL_FLAG[3] or t[4] & 16)):
+            continue
+        pos = (float(t[0]), float(t[1]))
+        a, b = gr.plan(here, pos), gr.plan(pos, goals[k].pos)
+        if a and b and path_length(a) + path_length(b) - base_len <= max_detour:
+            todo.append(Subgoal("item", name, pos, pos))
+    order, cur = [], here
+    while todo:
+        nxt = min(todo, key=lambda g: math.dist(cur, g.pos))
+        todo.remove(nxt)
+        order.append(nxt)
+        cur = nxt.pos
+    return goals[:k] + order + goals[k:]
+
+
 def stage_grids(m: MapData, goals: list[Subgoal], strict_lifts: bool = False) -> list[NavGrid]:
     """Planner grid for each stage: the world as it is before that subgoal."""
     grids, keys, opened = [], frozenset(), frozenset()

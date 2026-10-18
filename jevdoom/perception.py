@@ -22,6 +22,7 @@ MAX_RAY = 1500
 USE_RANGE = 64           # Doom use reach in map units
 BODY_RADIUS = 16         # Doom player radius: a move is blocked by whatever either shoulder meets
 LINE_OF_FIRE = os.environ.get("JEVDOOM_LINE_OF_FIRE", "1") == "1"
+SHOTGUN_REFIRE = 37      # tics between shotgun shots (Doom)
 HISTORY = 4              # commands listed in "Recent commands"
 
 
@@ -212,6 +213,24 @@ class Perception:
                 return best
         return None
 
+    def escape(self, obs: Obs, threats) -> tuple[float, float] | None:
+        """Direction to run from bosses: of the spots 160-320 units away the player can walk to straight,
+        the one farthest from the nearest threat (a running player outpaces a Baron about 2 to 1)."""
+        grid = self._stage_grid(obs)
+        best = None
+        for d in (320, 240, 160):
+            for k in range(16):
+                th = math.radians(obs.angle + 22.5 * k)
+                p = (obs.x + d * math.cos(th), obs.y + d * math.sin(th))
+                if grid.sector_at(*p) < 0 or not grid.walkable_line((obs.x, obs.y), p):
+                    continue
+                gap = min(math.dist(p, (t.x, t.y)) for t in threats)
+                if best is None or gap > best[0]:
+                    best = (gap, float(d), obs.bearing_to(*p))
+            if best and best[0] > 300:
+                break
+        return None if best is None else (best[1], best[2])
+
     # -- route compass ----------------------------------------------------------
     def keys_held(self, obs: Obs) -> set[str]:
         return self.map_keys - obs.keys_present
@@ -226,8 +245,10 @@ class Perception:
             g = self.goal
             if g.kind == "key":
                 done = g.color in self.keys_held(obs)
-            elif g.kind == "item":
-                done = {"shotgun": obs.has_shotgun, "chaingun": obs.has_chaingun}.get(g.label, True)
+            elif g.kind == "item" and g.label in ("shotgun", "chaingun"):
+                done = {"shotgun": obs.has_shotgun, "chaingun": obs.has_chaingun}[g.label]
+            elif g.kind == "item":                    # a supply: done on arrival (not taken at full health)
+                done = obs.dist_to(*g.pos) < 40
             elif g.kind == "kill":
                 done = not self._targets(obs)
             else:
@@ -370,6 +391,9 @@ class Perception:
         parts = [f"Health {hp:.0f}, armor {obs.armor:.0f}. Weapon: {weapon}; "
                  f"{obs.bullets:.0f} bullets, {obs.shells:.0f} shells"
                  + (f", {obs.rockets:.0f} rockets." if obs.rockets > 0 else ".")]
+        if obs.weapon == 3:       # the shotgun fires once per 37 tics whatever is pressed: say when it is ready
+            wait = max(0, SHOTGUN_REFIRE - (obs.tic - obs.shot_tic)) / 35
+            parts[0] += " Shotgun ready." if wait < 0.05 else f" Shotgun reloading, ready in {wait:.1f} s."
         held = sorted(self.keys_held(obs))
         if held:
             parts[0] += f" Keys: {', '.join(held)}."
@@ -406,6 +430,9 @@ class Perception:
             cv = self.cover(obs, bosses[0])
             name = MONSTER_NAMES.get(bosses[0].name, "boss")
             parts.append(f"Cover from {name}: {cv[0]:.0f} units, {_side(cv[1])}." if cv else f"Cover from {name}: none near.")
+            es = self.escape(obs, bosses)
+            if es:
+                parts.append(f"Escape from {name}: {es[0]:.0f} units open, {_side(es[1])}.")
 
         rays, hazard = [], None
         for name, rel in RAYS:

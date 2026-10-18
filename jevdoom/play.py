@@ -31,7 +31,7 @@ from .executor import Executor
 from .jev import LOCAL_URL
 from .loadout import apply as apply_loadout, from_obs, load as load_loadout
 from .perception import Perception
-from .progression import Subgoal, load_or_solve, stage_grids, with_weapon_detours
+from .progression import Subgoal, load_or_solve, stage_grids, with_supply_detours, with_weapon_detours
 from .wadmap import NavGrid, exit_target, load_map, path_length
 
 TICRATE = 35
@@ -163,7 +163,7 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     start = next((float(t[0]), float(t[1])) for t in m.things if t[3] == 1)
     try:
         held = set(loadout["weapons"]) if loadout else set()
-        goals = with_weapon_detours(m, load_or_solve(m, start), start, held=held)
+        goals = with_supply_detours(m, with_weapon_detours(m, load_or_solve(m, start), start, held=held), start)
     except RuntimeError:          # planner found no progression (E1M3/E1M4/E1M7): exit only, compass if any route
         st, mid, _ = exit_target(m)
         goals = [Subgoal("exit", "exit", st, mid)]
@@ -204,10 +204,11 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     cost = 0.0
     exe_seq = 0
     obs = None
+    prev_ammo, shot_tic = None, -10**6
     info = {"arm": arm, "seed": seed, "cmd": None, "probs": {}, "state": "", "lat": 0.0, "n": 0, "left": total_route}
     t_start = time.perf_counter()
     outcome = "timeout"
-    stuck, progress_left, progress_tic = False, float("inf"), 0   # stuck_s of game time without 50 units of route progress
+    stuck, progress_left, progress_tic, progress_dealt = False, float("inf"), 0, 0.0   # stuck_s of game time without 50 units of route progress
     try:
         while True:
             if g.is_episode_finished():
@@ -215,6 +216,10 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
             obs = observe(g, tic)
             if obs is None:
                 break
+            ammo = (obs.weapon, {3: obs.shells, 5: obs.rockets}.get(obs.weapon, obs.bullets))
+            if prev_ammo is not None and ammo[0] == prev_ammo[0] and ammo[1] < prev_ammo[1]:
+                shot_tic = tic                        # the weapon fired this tic: reload clock starts
+            prev_ammo, obs.shot_tic = ammo, shot_tic
             if stepped and exe.settled:
                 if exe_seq == brain.issued:                  # previous command took effect: decide now
                     t0 = time.perf_counter()
@@ -262,8 +267,9 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                         + sum(stage_len[perc.stage + 1:]))
                 best_left = min(best_left, left)
                 info["left"] = left
-                if left < progress_left - 50:
-                    progress_left, progress_tic = left, tic
+                if left < progress_left - 50 or obs.damage_dealt > progress_dealt:
+                    progress_tic = tic                # route progress, or a fight going on (a boss stage)
+                    progress_left, progress_dealt = min(progress_left, left), obs.damage_dealt
                 elif stuck_s and tic - progress_tic > stuck_s * TICRATE:
                     stuck = True
                     break
