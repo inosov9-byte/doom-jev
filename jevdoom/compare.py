@@ -96,7 +96,7 @@ def main(argv=None):
     ap.add_argument("--probe", action="store_true", help="offline 60-situation probe per arm instead of live runs")
     ap.add_argument("--dry-run", action="store_true", help="mock engines with each arm's latency profile; free")
     ap.add_argument("--map", default="E1M1", help="map lump (E1M1..E1M9); progression stages load via play.run")
-    ap.add_argument("--timeout", type=int, default=300)
+    ap.add_argument("--timeout", type=int, default=120, help="game seconds per run; a run with no route progress for 45 s ends as \"stuck\"")
     ap.add_argument("--local-url", default=LOCAL_URL)
     ap.add_argument("--no-video", action="store_true")
     ap.add_argument("--window", action="store_true")

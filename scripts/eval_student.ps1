@@ -8,7 +8,7 @@ param(
     [string]$Map = "E1M1",
     [int]$First = 26,
     [int]$Last = 45,
-    [int]$Timeout = 300,
+    [int]$Timeout = 120,
     [switch]$Video,
     [string]$Root = "C:\tmp\jev-doom"
 )

@@ -144,7 +144,7 @@ def git_commit() -> str:
 def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\doom1.wad", map_name: str = "E1M1",
         skill: int = 3, local_url: str = LOCAL_URL, timeout: int = 300, window: bool = False,
         record_video: bool = False, runs_dir: str = "runs", compass: bool = True, dry_run: bool = False,
-        engine: Engine | None = None, stepped: bool = False, quiet: bool = False) -> dict:
+        engine: Engine | None = None, stepped: bool = False, quiet: bool = False, stuck_s: float = 45.0) -> dict:
     """stepped=True: the game waits for every decision (no real time, no worker thread). For
     developing the rules expert and recording expert trajectories; not used for the comparison."""
     engine = engine or make_engine(arm, local_url=local_url, dry_run=dry_run, seed=seed or 0)
@@ -190,6 +190,7 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     info = {"arm": arm, "seed": seed, "cmd": None, "probs": {}, "state": "", "lat": 0.0, "n": 0, "left": total_route}
     t_start = time.perf_counter()
     outcome = "timeout"
+    stuck, progress_left, progress_tic = False, float("inf"), 0   # stuck_s of game time without 50 units of route progress
     try:
         while True:
             if g.is_episode_finished():
@@ -243,6 +244,11 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                         + sum(stage_len[perc.stage + 1:]))
                 best_left = min(best_left, left)
                 info["left"] = left
+                if left < progress_left - 50:
+                    progress_left, progress_tic = left, tic
+                elif stuck_s and tic - progress_tic > stuck_s * TICRATE:
+                    stuck = True
+                    break
             if ffmpeg is not None and obs.screen is not None:
                 info.update(t=tic / TICRATE, health=obs.health, kills=obs.kills)
                 ffmpeg.stdin.write(draw_panel(obs.screen, info).tobytes())
@@ -251,7 +257,9 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                 delay = target - time.perf_counter()
                 if delay > 0:
                     time.sleep(delay)
-        if g.is_player_dead():
+        if stuck:
+            outcome = "stuck"
+        elif g.is_player_dead():
             outcome = "died"
         elif g.get_episode_time() < g.get_episode_timeout() - 1:   # ended early and alive: level exit
             outcome = "exit"
