@@ -6,7 +6,8 @@
 param(
     [string]$Root = "C:\tmp\jev-doom",
     [string]$SimpleJevCommit = "31c8d7a",
-    [switch]$CpuTorch    # use CPU PyTorch instead of ROCm (no AMD GPU)
+    [switch]$CpuTorch,   # use CPU PyTorch instead of ROCm (no AMD GPU)
+    [switch]$Cuda        # NVIDIA GPU (RTX 3090 Ti): CUDA PyTorch plus the fast Qwen3.5 linear-attention kernels
 )
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force "$Root\wad", "$Root\cache\uv", "$Root\cache\hf", "$Root\cache\tmp" | Out-Null
@@ -35,6 +36,14 @@ if (-not (Test-Path "$Root\venv-rocm")) { uv venv -p 3.12 "$Root\venv-rocm" -q }
 $py = "$Root\venv-rocm\Scripts\python.exe"
 if ($CpuTorch) {
     uv pip install -p $py -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
+} elseif ($Cuda) {
+    # Untested as of 2026-10-18. Ampere (sm_86) runs on the CUDA 12.8 wheels.
+    uv pip install -p $py -q torch torchvision --index-url https://download.pytorch.org/whl/cu128
+    # Qwen3.5's DeltaNet layers fall back to a slow PyTorch path without these. Triton on Windows
+    # comes from triton-windows; if causal-conv1d will not build, the model still runs (slower).
+    uv pip install -p $py -q triton-windows flash-linear-attention
+    uv pip install -p $py -q causal-conv1d --no-build-isolation
+    if ($LASTEXITCODE -ne 0) { Write-Warning "causal-conv1d did not install; Qwen3.5 still runs, slower" }
 } else {
     $R = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1"
     uv pip install -p $py -q "$R/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl" "$R/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl" `
