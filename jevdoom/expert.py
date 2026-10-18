@@ -212,7 +212,8 @@ def _decide(f: dict) -> str:
                and (e["dist"] <= reach or (e["kind"] in BOSSES and has_ammo)
                     or (e["kind"] in MELEE and e["dist"] <= melee_reach))]
     if threats:
-        t = min(threats, key=lambda e: e["dist"])
+        # Shotgun guys first among similar distances: one blast takes 9-45 health (E1M4, E1M5 openings).
+        t = min(threats, key=lambda e: e["dist"] * (0.6 if e["kind"] == "shotgun guy" else 1.0))
         # A barrel in the firing cone inside its blast radius takes the shot, shotgun spread included
         # (E1M8: one blast, 100 -> 10 health; a pellet clipped a barrel 41 units off, 100 -> 35).
         cone = min((d for k, (d, kind) in f["rays"].items() if k in ("ahead", "30 left", "30 right")
@@ -282,8 +283,11 @@ def _decide(f: dict) -> str:
                 return _open_side(f, "fire_strafe_")       # demon about to bite (E1M6): sidestep while firing
             return "fire"
         turn = turn_toward(t["angle"])
-        if turn.endswith(("_5", "_15", "_30")) and not (t["kind"] in BOSSES and t["dist"] > 500):
-            return turn + "_fire"                          # small aim correction: aim and shoot in one decision
+        # Small aim correction: aim and shoot in one decision. Not while the shotgun reloads: turn-and-fire
+        # holds the trigger until the shot is out, and the player stood still for up to a second in
+        # E1M4's opening crossfire (zombiemen and shotgun guys, 71 -> 41 in one such wait).
+        if turn.endswith(("_5", "_15", "_30")) and not (t["kind"] in BOSSES and t["dist"] > 500)                 and f["reload"] <= RELOAD_DODGE:
+            return turn + "_fire"
         return turn
 
     # 3. shot from out of view: face the attacker if we can fight back
