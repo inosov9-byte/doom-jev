@@ -66,6 +66,7 @@ class Perception:
         self.history: list[tuple[str, float]] = []   # (command, units moved) for recent decisions
         self.door_ceil_prev: dict[int, float] = {}   # door sector -> ceiling height at the previous description
         self.live_grids: dict[int, NavGrid] = {}     # stage -> grid rebuilt from live sector heights
+        self._stand_cache: tuple = (None, 0.0)
         self._reach: dict[tuple, tuple] = {}           # (id(grid), goal) -> (grid, cells the goal is reachable from)
         self.at_goal = False                          # close to the goal with a clear walk to it
         self.live_check_tic = -10**9
@@ -144,6 +145,8 @@ class Perception:
             cur, nxt = (f, b) if den[i] < 0 else (b, f)
             cf, cc = obs.heights.get(cur, (self.m.floor[cur], self.m.ceil[cur]))
             nf, nc = obs.heights.get(nxt, (self.m.floor[nxt], self.m.ceil[nxt]))
+            if d < BODY_RADIUS + 8:           # within the player's box: it stands on the highest floor it touches
+                cf = max(cf, self._stand_floor(obs))
             if min(cc, nc) - max(cf, nf) < PLAYER_HEIGHT:
                 if self.special[i] in DOOR_SPECIALS or nxt in self.m.door_sectors:
                     door = nxt if nxt in self.m.door_sectors else cur
@@ -181,6 +184,21 @@ class Perception:
         if not (0 <= r < grid.h and 0 <= c < grid.w) or grid.blocked[r, c]:
             return False
         return not mask[1][r, c]
+
+    def _stand_floor(self, obs: Obs) -> float:
+        """Floor the player stands on: Doom holds it at the highest floor under any corner of its box, so
+        a player whose centre hangs over a drop still stands on the edge (E1M3: the centre over the toxic
+        pit made the walkway read as a ledge too high to climb, and the expert froze on the edge)."""
+        if self._stand_cache[0] == (obs.tic, obs.x, obs.y):
+            return self._stand_cache[1]
+        best = -1e9
+        for ox, oy in ((0, 0), (BODY_RADIUS, BODY_RADIUS), (BODY_RADIUS, -BODY_RADIUS),
+                       (-BODY_RADIUS, BODY_RADIUS), (-BODY_RADIUS, -BODY_RADIUS)):
+            sec = self.grid.sector_at(obs.x + ox, obs.y + oy)
+            if sec >= 0:
+                best = max(best, obs.heights.get(sec, (self.m.floor[sec], 0))[0])
+        self._stand_cache = ((obs.tic, obs.x, obs.y), best)
+        return best
 
     def _in_pit(self, obs: Obs, x: float, y: float) -> bool:
         """A dead-end spot below the player's floor (not just somewhere shut off by a door)."""

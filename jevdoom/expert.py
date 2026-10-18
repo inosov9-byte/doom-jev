@@ -355,7 +355,7 @@ def decide(state: str) -> str:
     # while being shot): break it with a short step where there is room.
     if cmd.startswith("turn_") and not cmd.endswith("_fire") and _flip_flop(f):
         ahead = f["rays"].get("ahead", (1500.0, "open"))
-        if ahead[0] > 90 and not _unsafe(f, "forward_short"):
+        if ahead[0] > 40 and not _unsafe(f, "forward_short"):
             return "forward_short"
     if not _unsafe(f, cmd):
         return cmd
@@ -372,15 +372,19 @@ def decide(state: str) -> str:
         options.append("fire")
     if cmd == "forward":
         options.append("forward_short")
-    if cmd != "back" and room("behind") > 60 and not (f["blocked"] and last == "back"):
+    if cmd != "back" and room("behind") > 30 and not (f["blocked"] and last == "back"):
         options.append("back")
     if cmd != "forward_short" and room("ahead") > 40 and not (f["blocked"] and last.startswith("forward")):
         options.append("forward_short")
     for o in options:
         if not _unsafe(f, o):
             return o
-    # Boxed in between walls and the drop: face along the open side, where a short step has room.
-    return "turn_" + _open_side(f) + "_90"
+    # Boxed in between walls and the drop: turn 30 degrees away from the nearer drop, so the next short
+    # step leads off the edge at a slant (a strafe would carry the player 200 units).
+    near = {sd: min(f["drops"].get(f"{a} {sd}", 1e9) for a in (30, 60, 90)) for sd in ("left", "right")}
+    if near["left"] == near["right"]:
+        return "turn_" + _open_side(f) + "_30"
+    return "turn_" + ("left" if near["left"] > near["right"] else "right") + "_30"
 
 
 def decide_soft(state: str, smoothing: float = 0.05, temperature: float = 6.0) -> dict[str, float]:
