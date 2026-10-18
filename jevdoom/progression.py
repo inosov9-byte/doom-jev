@@ -112,6 +112,22 @@ def _stand_points(line, dist=40.0):
     return [(mx + nx * dist, my + ny * dist), (mx - nx * dist, my - ny * dist)], (mx, my)
 
 
+def _pickup_spot(g: NavGrid, reach, kpos) -> tuple[float, float] | None:
+    """A reachable cell from which an item on an unclimbable ledge is still picked up. Doom touches an
+    item when the bounding boxes overlap (|dx|, |dy| < player radius 16 + item radius 20) and the item
+    is at most 56 above / 8 below the player (E1M7: the blue key lies on a lip 32 above the floor)."""
+    r, c = g.to_cell(*kpos)
+    kf, best = g.floor[r, c], None
+    for rr in range(max(r - 2, 0), min(r + 3, g.h)):
+        for cc in range(max(c - 2, 0), min(c + 3, g.w)):
+            x, y = g.to_world(rr, cc)
+            if reach[rr, cc] and max(abs(x - kpos[0]), abs(y - kpos[1])) < 32 and -8 <= kf - g.floor[rr, cc] <= 56:
+                d = math.dist((x, y), kpos)
+                if best is None or d < best[0]:
+                    best = (d, (x, y))
+    return best and best[1]
+
+
 BOSS_TRIGGERS = {"E1M8": (3003, "baron of hell", 666)}   # map -> (boss thing type, label, tag opened when all die)
 
 
@@ -137,10 +153,10 @@ def solve(m: MapData, start: tuple[float, float], max_depth: int = 5, verbose: b
     exit_goal = Subgoal("exit", "exit" if m.exit_lines else "teleporter", stand, mid)
     boss = BOSS_TRIGGERS.get(m.name)
     keys_avail = [(KEY_THINGS[t[3]], (float(t[0]), float(t[1]))) for t in m.things if t[3] in KEY_THINGS]
-    triggers = {}
-    for l in m.lines:
-        if l.tag and l.special and l.special not in NOT_MOVERS and l.special not in LIFT_TRIGGERS                 and l.tag not in triggers:
-            triggers[l.tag] = l
+    triggers: dict[int, list] = {}      # tag -> every line firing it (E1M4: tag 1 has a W1 box around the
+    for l in m.lines:                   # blue key behind the doors and reachable WR lines in front of them)
+        if l.tag and l.special and l.special not in NOT_MOVERS and l.special not in LIFT_TRIGGERS:
+            triggers.setdefault(l.tag, []).append(l)
     grids: dict = {}
 
     def grid(keys, opened):
@@ -161,29 +177,32 @@ def solve(m: MapData, start: tuple[float, float], max_depth: int = 5, verbose: b
             return steps + [exit_goal]
         if len(steps) >= max_depth:
             continue
-        area = int(g.reachable(pos).sum())
+        reach = g.reachable(pos)
+        area = int(reach.sum())
         if boss and boss[2] not in opened:           # kill the bosses: their deaths open the boss tag
             spot = _boss_spots(m, g, pos)
             if spot and int(grid(keys, opened | {boss[2]}).reachable(spot[0]).sum()) > area:
                 q.append((keys, opened | {boss[2]}, spot[0],
                           steps + [Subgoal("kill", boss[1], spot[0], spot[1], tag=boss[2])]))
         for color, kpos in keys_avail:
-            if color not in keys and g.plan(pos, kpos):
-                q.append((keys | {color}, opened, kpos,
-                          steps + [Subgoal("key", KEY_NAMES[color], kpos, kpos, color=color)]))
-        for tag, l in triggers.items():
+            spot = None if color in keys else kpos if g.plan(pos, kpos) else _pickup_spot(g, reach, kpos)
+            if spot:
+                q.append((keys | {color}, opened, spot,
+                          steps + [Subgoal("key", KEY_NAMES[color], spot, kpos, color=color)]))
+        for tag, lines in triggers.items():
             if tag in opened:
                 continue
-            kind = {"S": "switch", "W": "walk", "G": "shoot"}[how(l.special)]
-            pts, mid_l = _stand_points(l, 40.0 if kind != "shoot" else 200.0)
-            for p in pts:
-                if g.sector_at(*p) >= 0 and g.plan(pos, p):
-                    # only worth it if firing the trigger lets the player reach more of the map
-                    if int(grid(keys, opened | {tag}).reachable(p).sum()) <= area:
-                        break
+            for l in lines:
+                kind = {"S": "switch", "W": "walk", "G": "shoot"}[how(l.special)]
+                pts, mid_l = _stand_points(l, 40.0 if kind != "shoot" else 200.0)
+                p = next((p for p in pts if g.sector_at(*p) >= 0 and g.plan(pos, p)), None)
+                if p is None:
+                    continue
+                # only worth it if firing the trigger lets the player reach more of the map
+                if int(grid(keys, opened | {tag}).reachable(p).sum()) > area:
                     label = {"switch": "switch", "walk": "trigger line", "shoot": "switch to shoot"}[kind]
                     q.append((keys, opened | {tag}, p, steps + [Subgoal(kind, label, p, mid_l, tag=tag)]))
-                    break
+                break
         if verbose:
             print(f"  state keys={sorted(keys)} opened={sorted(opened)} expanded, queue {len(q)}")
     return None

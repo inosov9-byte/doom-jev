@@ -171,8 +171,10 @@ class NavGrid:
 
     # -- geometry ---------------------------------------------------------
     def _locate_sectors(self) -> np.ndarray:
-        """Point-in-sector by casting a ray to +x and taking the nearest crossed linedef."""
-        px, py = self.cx.ravel(), self.cy.ravel()
+        """Point-in-sector by casting a ray to +x and taking the nearest crossed linedef. The ray is nudged off
+        integer y: a cell centre level with a vertex tied two lines there and could pick the void side of a
+        wall (E1M7: a whole row of cells read as outside the map, cutting a room in two)."""
+        px, py = self.cx.ravel(), self.cy.ravel() + 1e-3
         best = np.full(px.shape, np.inf)
         sector = np.full(px.shape, -1)
         for l in self.m.lines:
