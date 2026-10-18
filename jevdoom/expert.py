@@ -219,7 +219,12 @@ def _decide(f: dict) -> str:
         cone = min((d for k, (d, kind) in f["rays"].items() if k in ("ahead", "30 left", "30 right")
                     and kind.startswith("barrel")), default=1500.0)
         if cone < BARREL_BLAST:
-            return "back" if f["rays"].get("behind", (0.0, ""))[0] > 120 else _open_side(f, "strafe_")
+            move = "back" if f["rays"].get("behind", (0.0, ""))[0] > 120 else _open_side(f, "strafe_")
+            if not _unsafe(f, move):
+                return move
+            threats = []            # boxed in by drops beside barrels (E1M3's walkway): hold fire, keep walking
+    if threats:
+        t = min(threats, key=lambda e: e["dist"] * (0.6 if e["kind"] == "shotgun guy" else 1.0))
         # A barrel beside enemies, outside its blast: shoot the barrel (E1M8's opening: demon packs, pistol only).
         # Not with a second barrel near the player: blasts chain (E1M8 seed 3: 100 -> 35 in one shot).
         near_barrel = min((d for k, (d, kind) in f["rays"].items() if k != "ahead" and kind.startswith("barrel")),
@@ -286,7 +291,11 @@ def _decide(f: dict) -> str:
         # Small aim correction: aim and shoot in one decision. Not while the shotgun reloads: turn-and-fire
         # holds the trigger until the shot is out, and the player stood still for up to a second in
         # E1M4's opening crossfire (zombiemen and shotgun guys, 71 -> 41 in one such wait).
-        if turn.endswith(("_5", "_15", "_30")) and not (t["kind"] in BOSSES and t["dist"] > 500)                 and f["reload"] <= RELOAD_DODGE:
+        # Nor with a barrel near the line to the target: the turn would put it in the cone (E1M3: a
+        # turn-and-fire past a barrel 20 units off killed the expert at 58 health).
+        barrel_near_aim = any(kind.startswith("barrel") and d < BARREL_BLAST and abs(RAY_ANGLES[k] - t["angle"]) <= 30
+                              for k, (d, kind) in f["rays"].items() if k in RAY_ANGLES)
+        if turn.endswith(("_5", "_15", "_30")) and not (t["kind"] in BOSSES and t["dist"] > 500)                 and f["reload"] <= RELOAD_DODGE and not barrel_near_aim:
             return turn + "_fire"
         return turn
 
@@ -308,6 +317,14 @@ def _decide(f: dict) -> str:
         return _go_to(p["angle"], p["dist"])
 
     route = f["route"]
+    # 4b. a barrel on the way, outside its blast: shoot it before walking up to it. E1M3's walkway runs
+    #     between barrels and the toxic pit; every expert that stood beside them died in one blast when a
+    #     fireball or pellet set them off (57-58 health gone at once, three seeds).
+    near_barrel = min((d for k, (d, kind) in f["rays"].items() if k != "ahead" and kind.startswith("barrel")),
+                      default=1500.0)
+    if (ahead[1].startswith("barrel") and BARREL_BLAST + 20 <= ahead[0] <= 400 and near_barrel >= 200 and has_ammo
+            and route is not None and abs(route) < 20):
+        return "fire"
     # 5. doors on the way
     # A door still closed right after "use" does not open by hand (E1M9: a sector raised by a trigger
     # elsewhere; the expert pressed use 60 times while the route went 33 deg right).
