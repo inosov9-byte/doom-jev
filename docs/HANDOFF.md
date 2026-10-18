@@ -14,7 +14,7 @@ Read this first in a new Claude Code session on the PC. It says where the work s
   - On 5 easy commands it learns after a ~110-step plateau (75% held-out agreement at step 150).
   - On the full 20-command expert set it was still predicting `forward` at step 300 of 450 (6.7% agreement).
   - Training ran at ~32 s per step on the laptop. The run was stopped. No usable model exists.
-- **Latency is the deciding factor.** The rule-based expert (the teacher) with an artificial decision delay, E1M1, perception v2, seeds 1-5 (`C:	mp\jev-doom\smoke-v2b` on the laptop):
+- **Latency is the deciding factor.** The rule-based expert (the teacher) with an artificial decision delay, E1M1, perception v2, seeds 1-5 (`C:\tmp\jev-doom\smoke-v2b` on the laptop):
 
 | Decision delay | Clears | Median route progress | Median time |
 |---|---|---|---|
@@ -139,6 +139,6 @@ Open Claude Code in `C:\Users\<you>\repos\jev-doom` and say: "Read docs/HANDOFF.
 ## Laptop state at handoff
 
 - Training stopped; no GPU jobs running.
-- The latency sweep may still be running (writes to `C:\tmp\jev-doom\smoke-v2b`).
+- The latency sweep finished; its results are in the table above.
 - `C:\tmp\jev-doom\KEEP_AWAKE` keeps the laptop awake: delete the file to let it sleep.
 - The viewer is served on port 4560 from `C:\Users\inoso\repos\jev-doom\runs`.
