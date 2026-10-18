@@ -26,8 +26,10 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--full-prompt", action="store_true", help="train on the teacher-style prompt instead of the short one")
     ap.add_argument("--min-prob", type=float, default=1e-4, help="floor for soft targets before renormalising")
+    ap.add_argument("--dedupe", action="store_true",
+                    help="drop expert rows whose state text was already seen (a stuck run repeats one state hundreds of times)")
     args = ap.parse_args(argv)
-    n = 0
+    n, seen, dropped = 0, set(), 0
     with open(args.out, "w", encoding="utf-8") as f:
         for path in args.labels:
             for line in open(path, encoding="utf-8"):
@@ -49,6 +51,11 @@ def main(argv=None):
             if args.max_per_file and len(rows) > args.max_per_file:
                 rows = rng.sample(rows, args.max_per_file)
             for i, r in enumerate(rows):
+                if args.dedupe:
+                    if r["state"] in seen:
+                        dropped += 1
+                        continue
+                    seen.add(r["state"])
                 choice = decide(r["state"])
                 target = {"probabilities": decide_soft(r["state"])} if args.soft else {"answer": choice}
                 rid = r.get("id") or f"{Path(path).parent.name}-{i:05d}"
@@ -58,7 +65,7 @@ def main(argv=None):
                        "provenance": {"teacher": "expert.py", "source": str(path)}}
                 f.write(json.dumps(rec) + "\n")
                 n += 1
-    print(f"{n} records -> {args.out}")
+    print(f"{n} records -> {args.out}" + (f" ({dropped} duplicate states dropped)" if args.dedupe else ""))
 
 
 if __name__ == "__main__":

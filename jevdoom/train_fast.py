@@ -100,6 +100,7 @@ def main(argv=None):
     ap.add_argument("--eval-every", type=int, default=100)
     ap.add_argument("--val-frac", type=float, default=0.08)
     ap.add_argument("--grad-ckpt", action="store_true")
+    ap.add_argument("--init-adapter", help="start from this LoRA adapter instead of a fresh one")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--progress", help="Markdown progress file (e.g. in OneDrive) rewritten at each evaluation")
     args = ap.parse_args(argv)
@@ -124,8 +125,12 @@ def main(argv=None):
     if args.grad_ckpt:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
-    model = get_peft_model(model, LoraConfig(r=args.lora_rank, lora_alpha=2 * args.lora_rank, lora_dropout=0.05,
-                                             target_modules="all-linear", task_type="CAUSAL_LM"))
+    if args.init_adapter:          # continue from an earlier student (DAgger rounds)
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, args.init_adapter, is_trainable=True)
+    else:
+        model = get_peft_model(model, LoraConfig(r=args.lora_rank, lora_alpha=2 * args.lora_rank, lora_dropout=0.05,
+                                                 target_modules="all-linear", task_type="CAUSAL_LM"))
     model.print_trainable_parameters()
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr, weight_decay=0.0)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / args.warmup) *

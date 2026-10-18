@@ -95,6 +95,7 @@ def main(argv=None):
     ap.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3, 4, 5])
     ap.add_argument("--probe", action="store_true", help="offline 60-situation probe per arm instead of live runs")
     ap.add_argument("--dry-run", action="store_true", help="mock engines with each arm's latency profile; free")
+    ap.add_argument("--map", default="E1M1", help="map lump (E1M1..E1M9); progression stages load via play.run")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--local-url", default=LOCAL_URL)
     ap.add_argument("--no-video", action="store_true")
@@ -111,7 +112,7 @@ def main(argv=None):
     kind = "probe" if args.probe else "live"
     out_dir = Path(args.out) if args.out else Path(args.runs) / (f"compare-{stamp}-{kind}" + ("-dryrun" if args.dry_run else ""))
     out_dir.mkdir(parents=True, exist_ok=True)
-    meta = {"kind": kind, "arms": args.arms, "seeds": args.seeds, "dry_run": args.dry_run,
+    meta = {"kind": kind, "map": args.map, "arms": args.arms, "seeds": args.seeds, "dry_run": args.dry_run,
             "timeout_s": args.timeout, "commit": git_commit(), "started": stamp}
 
     if args.probe:
@@ -138,7 +139,7 @@ def main(argv=None):
     for seed in args.seeds:
         for arm in args.arms:
             print(f"--- seed {seed} arm {arm}", flush=True)
-            s = run(arm, seed, local_url=args.local_url, timeout=args.timeout, window=args.window,
+            s = run(arm, seed, map_name=args.map, local_url=args.local_url, timeout=args.timeout, window=args.window,
                     record_video=not args.no_video, runs_dir=str(out_dir), dry_run=args.dry_run)
             results.append(s)
             print(f"    {s['outcome']:8s} progress {s['route_progress_pct']:5.1f}%  {s['game_seconds']:5.1f}s  "
@@ -152,7 +153,7 @@ def main(argv=None):
                for r in results]
     (out_dir / "results.json").write_text(json.dumps({"meta": meta, "aggregate": agg, "runs": results}, indent=2))
     (out_dir / "results.md").write_text(
-        f"# Live runs: Jev vs Haiku\n\n`{json.dumps(meta)}`\n\n## Per arm (medians over seeds)\n\n"
+        f"# Live runs: {args.map}\n\n`{json.dumps(meta)}`\n\n## Per arm (medians over seeds)\n\n"
         + md_table(agg) + "\n## Every run\n\n" + md_table(per_run))
     print(md_table(agg))
     print(f"written: {out_dir}")
