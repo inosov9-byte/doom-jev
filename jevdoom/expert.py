@@ -18,7 +18,7 @@ USE_REACH = 64
 ENGAGE = 250          # fight only close enemies; otherwise keep running the route (lag-robust: a moving player is hard to hit)
 FIST = 90
 AMMO_ITEMS = ("ammo clip", "box of bullets", "shells", "box of shells", "shotgun")
-HEALTH_ITEMS = ("stimpack", "medikit", "health bonus")
+HEALTH_ITEMS = ("stimpack", "medikit")      # a health bonus (+1) is not worth a detour
 MELEE = ("demon", "spectre")   # bite only: keep them from reaching the player
 MELEE_ENGAGE = 450             # demons are fought from this far: they come to the player anyway
 BOSSES = ("baron",)            # fought at any range when in view
@@ -27,6 +27,16 @@ RELOAD_DODGE = 0.2             # seconds of shotgun reload worth a sidestep inst
 COVER_HEALTH = 70             # below this, a hit from a boss sends the expert behind cover
 BARREL_BLAST = 160             # barrel explosion radius is 128; never shoot one closer than this
 KILL_GOALS = ("baron of hell",)
+DEAD_DROP = "drop with no way back"
+# How far a move can carry the player, slide included (a run builds momentum that slides ~60-150 units
+# after the next command replaces it), and the drop rays it must keep clear of: a strafe goes 90
+# degrees sideways, which the 60 degree ray sees at a slant.
+# A run also keeps sliding the old way after the next turn (Doom momentum): near a drop on either side
+# the expert walks (E1M3 seed 1: ran along the walkway, turned at the bend, slid into the pool).
+MOVE_REACH = {"forward": (("ahead", 150), ("30 left", 120), ("30 right", 120), ("60 left", 90), ("60 right", 90),
+                          ("90 left", 70), ("90 right", 70)), "forward_short": (("ahead", 90),), "back": (("behind", 200),),
+              **{f"{pre}strafe_{side}": ((f"90 {side}", 180), (f"60 {side}", 200))
+                 for pre in ("", "fire_") for side in ("left", "right")}}
 
 
 def _angle(text: str) -> float | None:
@@ -63,13 +73,17 @@ def parse_state(s: str) -> dict:
         for part in m.group(1).split(";"):
             p = re.match(r"\s*([a-z ]+?) (\d+) away, (.+)", part)
             if p:
-                f["pickups"].append({"name": p.group(1), "dist": int(p.group(2)), "angle": _angle(p.group(3))})
+                if "in a pit with no way back" not in p.group(3):     # cannot be fetched and survived
+                    f["pickups"].append({"name": p.group(1), "dist": int(p.group(2)), "angle": _angle(p.group(3))})
     m = re.search(r"Obstacles: ([^.]*(?:\.\d[^.]*)*)\.", s)
     if m:
         for part in m.group(1).split(";"):
             r = re.match(r"\s*(ahead|behind|\d+ left|\d+ right) (open|(\d+) (.+))", part)
             if r:
                 f["rays"][r.group(1)] = (1500.0, "open") if r.group(2) == "open" else (float(r.group(3)), r.group(4))
+    f["drops"] = {k: d for k, (d, kind) in f["rays"].items() if kind.startswith(DEAD_DROP)}
+    for d, side in re.findall(r"(\d+) units (90 left|90 right)", (re.search(r"Drop with no way back ([^.]*)\.", s) or [""])[0]):
+        f["drops"][side] = float(d)
     m = re.search(r"Shotgun reloading, ready in ([\d.]+) s", s)
     f["reload"] = float(m.group(1)) if m else 0.0
     m = re.search(r"Fireball incoming in ([\d.]+) s, sidestep (left|right)\.", s)
@@ -93,6 +107,8 @@ def parse_state(s: str) -> dict:
     m = re.search(r"Being shot from out of view, ([^.]+)\.", s)
     if m:
         f["attacker"] = _angle(m.group(1))
+    m = re.search(r"Recent commands, oldest first: ([^;]*);", s)
+    f["recent"] = [c.strip().split(" ")[0] for c in m.group(1).split(",")] if m else []
     m = re.search(r"Last command: (\w+), moved (\d+) units( \(blocked\))?(, took (\d+) damage)?", s)
     if m:
         f["last"], f["blocked"] = m.group(1), bool(m.group(3))
@@ -134,14 +150,26 @@ def _open_side(f: dict, prefix: str = "") -> str:
     return prefix + ("left" if left >= right else "right")
 
 
+RAY_ANGLES = {"ahead": 0, "30 left": 30, "60 left": 60, "30 right": -30, "60 right": -60}
+
+
+def _cut_off(f: dict, p: dict) -> bool:
+    """The ray nearest the pickup's bearing meets a wall, ledge or drop well before it: no straight walk
+    (E1M3: a stimpack across a bend of the walkway; the expert stepped to the drop and back 20 times)."""
+    ray = min(RAY_ANGLES, key=lambda k: abs(RAY_ANGLES[k] - p["angle"]))
+    if abs(RAY_ANGLES[ray] - p["angle"]) > 15:
+        return False
+    d, kind = f["rays"].get(ray, (1500.0, "open"))
+    return kind != "open" and not kind.startswith(("door", "barrel")) and d < p["dist"] - 24
+
+
 def _go_to(angle: float, dist: float) -> str:
     if abs(angle) >= 7.5:
         return turn_toward(angle)
     return "forward_short" if dist < 160 else "forward"
 
 
-def decide(state: str) -> str:
-    f = parse_state(state)
+def _decide(f: dict) -> str:
     ahead = f["rays"].get("ahead", (1500.0, "open"))
     has_ammo = f["bullets"] > 0 or f["shells"] > 0
 
@@ -243,6 +271,10 @@ def decide(state: str) -> str:
                 return _dodge(f) if abs(t["angle"]) < 30 else turn_toward(t["angle"])
         if t["crosshair"] and f["reload"] > RELOAD_DODGE and t["dist"] > 110:
             return _dodge(f)                               # shotgun reloading: move instead of a wasted fire
+        # Within claw reach and reloading: back off facing them instead of standing to wait for the shot
+        # (E1M3's blue key trap: three imps clawed the expert 46 -> 16 while it waited out each reload).
+        if f["reload"] > RELOAD_DODGE and t["dist"] <= 110 and t["kind"] not in MELEE                 and f["rays"].get("behind", (0.0, ""))[0] > 120 and not (f["blocked"] and f["last"] == "back"):
+            return "back"
         if t["crosshair"]:
             if f["damage"] > 0 and "fire" in (f["last"] or ""):
                 return _open_side(f, "fire_strafe_")       # getting hit while shooting: dodge and keep firing
@@ -260,8 +292,13 @@ def decide(state: str) -> str:
 
     # 4. supplies: ammo when out, health when low
     low_shells = f["weapon"] == "shotgun" and f["shells"] < 8      # Barons take ~15 shotgun blasts each
-    want = AMMO_ITEMS if (not has_ammo or low_shells) else HEALTH_ITEMS if f["health"] < 40 else ()
-    items = [p for p in f["pickups"] if p["name"] in want and p["dist"] < 600 and p["angle"] is not None]
+    # Health before ammo when low (E1M3: at 3 health the expert walked past a medikit 108 units away
+    # to fetch shells). Below 60 a near medikit is worth the steps: carried health decides the next level.
+    health = [p for p in f["pickups"] if p["name"] in HEALTH_ITEMS and p["angle"] is not None
+              and p["dist"] < (600 if f["health"] < 40 else 300) and f["health"] < 60 and not _cut_off(f, p)]
+    ammo = [p for p in f["pickups"] if p["name"] in AMMO_ITEMS and p["angle"] is not None and p["dist"] < 600
+            and (not has_ammo or low_shells) and not _cut_off(f, p)]
+    items = health if health and (f["health"] < 40 or not ammo) else ammo
     if items:
         p = min(items, key=lambda p: p["dist"])
         return _go_to(p["angle"], p["dist"])
@@ -298,6 +335,52 @@ def decide(state: str) -> str:
         return _open_side(f, "strafe_")
 
     return "forward" if ahead[0] > 200 else "forward_short"
+
+
+def _unsafe(f: dict, cmd: str) -> bool:
+    """The move would carry the player over a drop with no way back."""
+    return any(f["drops"].get(ray, 1e9) < reach for ray, reach in MOVE_REACH.get(cmd, ()))
+
+
+def _flip_flop(f: dict) -> bool:
+    """The last commands alternate between turning left and right: rules are undoing each other."""
+    turns = [c.split("_")[1] for c in f["recent"][-3:] if c.startswith("turn_") and c != "turn_around"]
+    return len(turns) == 3 == len(f["recent"][-3:]) and turns[0] == turns[2] != turns[1]
+
+
+def decide(state: str) -> str:
+    f = parse_state(state)
+    cmd = _decide(f)
+    # Turning back and forth beside a drop (E1M3 seed 1: 1.5 s of left-right turns at the pool's corner
+    # while being shot): break it with a short step where there is room.
+    if cmd.startswith("turn_") and not cmd.endswith("_fire") and _flip_flop(f):
+        ahead = f["rays"].get("ahead", (1500.0, "open"))
+        if ahead[0] > 90 and not _unsafe(f, "forward_short"):
+            return "forward_short"
+    if not _unsafe(f, cmd):
+        return cmd
+    # E1M3's walkway is ~100 units wide between toxic pits: a 250-unit strafe or a full run off the
+    # bend fell in on every seed. Swap the move for the nearest one that stays on the floor.
+    side = "left" if cmd.endswith("left") else "right"
+    other = "right" if side == "left" else "left"
+    last = f["last"] or ""
+    room = lambda ray: f["rays"].get(ray, (1500.0, ""))[0]
+    options = []
+    if cmd.startswith(("strafe_", "fire_strafe_")) and room(f"60 {other}") > 40 and not (f["blocked"] and last.endswith(other)):
+        options.append(cmd.replace(side, other))
+    if cmd.startswith("fire_strafe_"):
+        options.append("fire")
+    if cmd == "forward":
+        options.append("forward_short")
+    if cmd != "back" and room("behind") > 60 and not (f["blocked"] and last == "back"):
+        options.append("back")
+    if cmd != "forward_short" and room("ahead") > 40 and not (f["blocked"] and last.startswith("forward")):
+        options.append("forward_short")
+    for o in options:
+        if not _unsafe(f, o):
+            return o
+    # Boxed in between walls and the drop: face along the open side, where a short step has room.
+    return "turn_" + _open_side(f) + "_90"
 
 
 def decide_soft(state: str, smoothing: float = 0.05, temperature: float = 6.0) -> dict[str, float]:

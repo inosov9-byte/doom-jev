@@ -143,6 +143,8 @@ class NavGrid:
         self.blocked |= geo["solid_block"]
         self.cost += geo["solid_cost"]                      # prefer the middle of corridors
         flat = self.cost.reshape(-1)
+        self.near_drop = np.zeros(self.cost.shape, bool)    # within 32 units of an edge one can fall off
+        near_drop = self.near_drop.reshape(-1)
         for l, (idx, val) in zip(m.lines, geo["near"]):
             if idx is None:
                 continue
@@ -150,6 +152,8 @@ class NavGrid:
             gap = min(ceil[l.front], ceil[l.back]) - max(ff, bf)
             if abs(ff - bf) > MAX_STEP or gap < PLAYER_HEIGHT:
                 np.add.at(flat, idx, val)                   # keep off ledges
+            if abs(ff - bf) > MAX_STEP and gap >= PLAYER_HEIGHT and not {l.front, l.back} & m.lift_sectors:
+                near_drop[idx] = True
         self.blocked_edges = self._ledge_crossings()
 
     def _geometry(self) -> dict:
@@ -269,6 +273,25 @@ class NavGrid:
                     stack.append((rr, cc))
         return mask
 
+    def can_reach(self, goal: tuple[float, float]) -> np.ndarray:
+        """Boolean mask of cells from which goal can be reached (reverse flood over directed edges).
+        Free cells outside it are dead ends: drops the player cannot climb back out of."""
+        mask = np.zeros((self.h, self.w), bool)
+        s = self.nearest_free(*self.to_cell(*goal))
+        if s is None:
+            return ~mask
+        stack = [s]
+        mask[s] = True
+        while stack:
+            r, c = stack.pop()
+            for dr, dc in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < self.h and 0 <= cc < self.w and not mask[rr, cc] and not self.blocked[rr, cc] \
+                        and self._edge_ok(rr, cc, r, c):
+                    mask[rr, cc] = True
+                    stack.append((rr, cc))
+        return mask
+
     def nearest_free(self, r: int, c: int, radius: int = 6) -> tuple[int, int] | None:
         best = None
         for dr in range(-radius, radius + 1):
@@ -324,15 +347,18 @@ class NavGrid:
         path.reverse()
         return path
 
-    def walkable_line(self, a: tuple[float, float], b: tuple[float, float]) -> bool:
-        """True when the straight segment a->b stays on free cells with legal transitions."""
+    def walkable_line(self, a: tuple[float, float], b: tuple[float, float], keep_off_drops: bool = False) -> bool:
+        """True when the straight segment a->b stays on free cells with legal transitions.
+        keep_off_drops: also stay 32 units clear of edges one can fall off (beyond the start's own cell)."""
         dist = math.dist(a, b)
         n = max(2, int(dist / (CELL / 2)))
-        prev = self.to_cell(*a)
+        prev = start = self.to_cell(*a)
         for i in range(1, n + 1):
             t = i / n
             cur = self.to_cell(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
             if not (0 <= cur[0] < self.h and 0 <= cur[1] < self.w) or self.blocked[cur]:
+                return False
+            if keep_off_drops and cur != start and self.near_drop[cur]:
                 return False
             if cur != prev:
                 if not self._edge_ok(*prev, *cur):
