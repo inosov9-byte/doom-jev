@@ -113,4 +113,36 @@ Later levels need things E1M1 does not: keys, locked doors, doors opened by a sw
 
 ## Results
 
-Filled in from `runs/compare-*/results.md` after the live comparison.
+Live, real time, E1M1 skill 3, 5 seeds per arm, 300 s limit (`runs/compare-final/results.md`):
+
+| Arm | Exit | Route progress, median (best) | Median decision | Decisions/s | Cost, 5 runs |
+|---|---|---|---|---|---|
+| Rules expert, instant | 5/5 | 100% in 21.7 s | ~0 s | 5.8 | 0 |
+| Rules expert, 0.7 s per decision | 0/5 | 87.9% (89.4%) | 0.70 s | 1.17 | 0 |
+| Jev hosted, Gemma-4-26B | 0/5 | 52.0% (75.6%) | 1.38 s | 0.66 | free demo |
+| Jev hosted, Qwen3.6-35B | 0/5 | 23.6% (23.8%) | 0.68 s | 1.08 | free demo |
+| Claude Haiku 5.5 | 0/5 | 12.7% (12.7%) | 0.96 s | 0.86 | $0.13 |
+| Claude Haiku 5.5, thinking | 0/5 | 12.7% (12.7%) | 1.32 s | 0.58 | $0.13 |
+
+What the table says:
+
+- Rules that clear the level every time stop clearing it when each decision arrives 0.7 s late. In real time, latency costs as much as judgement.
+- Both Haiku arms get stuck at the same corridor corner on every seed. The text says "moved 0 units (blocked)" after each step; Haiku keeps choosing forward and small turns. The expert reads the same line and sidesteps.
+- Hosted Jev with Gemma is the strongest LLM arm despite being the slowest: it fights back and follows doors and the route, and it dies in the nukage room fights.
+
+Single-decision quality does not predict play. On the 60-situation probe (20 commands), Haiku scores highest (0.875, Gemma 0.825, hosted Qwen 0.483), but its weakest category is exactly "blocked" (0.375; 0.125 with thinking), the one situation that ended all ten of its live runs. The rules expert scores only 0.617 on the probe, because it deliberately skips distant fights the probe expects it to take, and it is the only arm that finishes the level.
+
+### The local student
+
+Distilling the rule-based expert into Qwen3.5-0.8B takes far longer on this laptop than distilling an LLM teacher did. The first two runs (hard labels, then soft labels with a higher learning rate) were stopped at step 150 while still predicting "forward" for everything. The diagnosis:
+
+| Test | Result |
+|---|---|
+| Logits-at-last-position shortcut on vs off | identical to three decimals; not the cause |
+| Mid-training evaluation on vs off | identical; not the cause |
+| Prompts and targets as compiled by RFDT | correct (20 answer letters, targets map to the right commands) |
+| 5 clear-cut commands, 150 steps | flat at chance until about step 110, then a sharp drop: 75% held-out agreement at step 150 (chance 20%) |
+
+So the pipeline learns, after a long plateau, and the earlier runs were stopped just before that point would likely have arrived. A 450-step run on the full expert dataset was started afterwards (about 3.8 hours at 0.35 examples/s).
+
+Next step: the RTX 3090 Ti, where the same training runs an order of magnitude faster (estimate) and a larger student fits.
