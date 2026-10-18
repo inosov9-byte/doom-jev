@@ -22,7 +22,8 @@ HEALTH_ITEMS = ("stimpack", "medikit")      # a health bonus (+1) is not worth a
 MELEE = ("demon", "spectre")   # bite only: keep them from reaching the player
 MELEE_ENGAGE = 450             # demons are fought from this far: they come to the player anyway
 BOSSES = ("baron",)            # fought at any range when in view
-BOSS_NEAR, BOSS_FAR = 260, 450
+BOSS_NEAR, BOSS_FAR = 330, 520
+AIM_LEAD = 0.35                # seconds before the shotgun is ready: stop dodging and aim
 RELOAD_DODGE = 0.2             # seconds of shotgun reload worth a sidestep instead of a fire  # Baron kiting band
 COVER_HEALTH = 70             # below this, a hit from a boss sends the expert behind cover
 BARREL_BLAST = 160             # barrel explosion radius is 128; never shoot one closer than this
@@ -267,14 +268,16 @@ def _decide(f: dict) -> str:
                 if abs(a) >= 120:
                     return "back"
                 return "strafe_left" if a > 0 else "strafe_right"
-            if t["crosshair"]:
-                if t["dist"] > BOSS_FAR:
-                    return "forward_short"
-                # Shoot standing when the shotgun is ready, dodge while it reloads: fire_strafe ran the aim
-                # off a Baron at 200 units (23 of 63 pellets hit), and a fire during the reload is wasted.
-                return _dodge(f) if f["reload"] > RELOAD_DODGE else "fire"
-            if f["reload"] > RELOAD_DODGE:
+            if t["crosshair"] and t["dist"] > BOSS_FAR:
+                return "forward_short"
+            # Dodge while the shotgun reloads; from AIM_LEAD s before it is ready, stand and aim, and fire
+            # only with the Baron in the crosshair. Turn-and-fire from a strafe aimed at a stale angle
+            # (100 ms decisions: 23-48 damage per shell against 41-72 for the instant teacher).
+            if f["reload"] > AIM_LEAD:
                 return _dodge(f) if abs(t["angle"]) < 30 else turn_toward(t["angle"])
+            if t["crosshair"]:
+                return "fire"
+            return turn_toward(t["angle"])
         if t["crosshair"] and f["reload"] > RELOAD_DODGE and t["dist"] > 110:
             return _dodge(f)                               # shotgun reloading: move instead of a wasted fire
         # Within claw reach and reloading: back off facing them instead of standing to wait for the shot
