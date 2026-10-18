@@ -19,6 +19,7 @@ ENGAGE = 250          # fight only close enemies; otherwise keep running the rou
 FIST = 90
 AMMO_ITEMS = ("ammo clip", "box of bullets", "shells", "box of shells", "shotgun")
 HEALTH_ITEMS = ("stimpack", "medikit", "health bonus")
+MELEE = ("demon", "spectre")   # bite only: keep them from reaching the player
 
 
 def _angle(text: str) -> float | None:
@@ -148,6 +149,8 @@ def decide(state: str) -> str:
         if t["crosshair"]:
             if f["damage"] > 0 and "fire" in (f["last"] or ""):
                 return _open_side(f, "fire_strafe_")       # getting hit while shooting: dodge and keep firing
+            if t["kind"] in MELEE and t["dist"] < 110:
+                return _open_side(f, "fire_strafe_")       # demon about to bite (E1M6): sidestep while firing
             return "fire"
         turn = turn_toward(t["angle"])
         if turn.endswith(("_5", "_15", "_30")):
@@ -167,7 +170,10 @@ def decide(state: str) -> str:
 
     route = f["route"]
     # 5. doors on the way
-    if ahead[1].startswith("door (closed)") and ahead[0] <= USE_REACH and (route is None or abs(route) <= 60):
+    # A door still closed right after "use" does not open by hand (E1M9: a sector raised by a trigger
+    # elsewhere; the expert pressed use 60 times while the route went 33 deg right).
+    if (ahead[1].startswith("door (closed)") and ahead[0] <= USE_REACH and (route is None or abs(route) <= 60)
+            and f["last"] != "use"):
         return "use"
     if ahead[1].startswith("door (opening"):
         return "forward_short"
