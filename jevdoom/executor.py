@@ -81,12 +81,20 @@ class Executor:
 
     @staticmethod
     def _weapon(obs: Obs, a) -> None:
-        # Shotgun when it has shells, else pistol, else fist: a fixed rule, not a decision.
-        if obs.has_shotgun and obs.shells > 0:
+        # A fixed rule, not a decision: the best weapon with ammo. The rocket launcher only while
+        # every visible enemy is far enough away that the blast cannot reach the player
+        # (switch to it at 300+ units, keep it down to 200), never with nothing in view.
+        near = min((obs.dist_to(m.x, m.y) for m in obs.monsters if m.visible), default=None)
+        safe = near is not None and near >= (200 if obs.weapon == 5 else 300)
+        if obs.has_launcher and obs.rockets > 0 and safe:
+            want = 5
+        elif obs.has_shotgun and obs.shells > 0:
             want = 3
+        elif obs.has_chaingun and obs.bullets > 0:
+            want = 4
         elif obs.bullets > 0:
             want = 2
         else:
             want = 1
         if obs.weapon != want:
-            a[BI[{1: B.SELECT_WEAPON1, 2: B.SELECT_WEAPON2, 3: B.SELECT_WEAPON3}[want]]] = 1
+            a[BI[getattr(B, f"SELECT_WEAPON{want}")]] = 1

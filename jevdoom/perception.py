@@ -10,13 +10,15 @@ import math
 
 import numpy as np
 
-from .env import MONSTER_NAMES, PICKUP_NAMES, WEAPON_NAMES, Obs
+from .env import DECOR_NAMES, MONSTER_NAMES, SOLID_DECOR, PICKUP_NAMES, WEAPON_NAMES, Obs
 from .progression import DOOR_TRIGGERS, KEY_DOORS, KEY_THINGS, LIFT_TRIGGERS, Subgoal
 from .wadmap import DAMAGE_SECTORS, DOOR_SPECIALS, EXIT_SPECIALS, MAX_STEP, PLAYER_HEIGHT, NavGrid, exit_target, path_length
 
 RAYS = [("ahead", 0), ("30 left", 30), ("60 left", 60), ("30 right", -30), ("60 right", -60), ("behind", 180)]
 MAX_RAY = 1500
 USE_RANGE = 64           # Doom use reach in map units
+BODY_RADIUS = 16         # Doom player radius: a move is blocked by whatever either shoulder meets
+HISTORY = 4              # commands listed in "Recent commands"
 
 
 class Perception:
@@ -50,30 +52,67 @@ class Perception:
         self.idx = 0
         self.prev: Obs | None = None
         self.prev_cmd: str | None = None
+        self.history: list[tuple[str, float]] = []   # (command, units moved) for recent decisions
         self.door_ceil_prev: dict[int, float] = {}   # door sector -> ceiling height at the previous description
 
     # -- raycasting -----------------------------------------------------------
-    def ray(self, obs: Obs, rel_deg: float) -> tuple[float, str, float | None]:
-        """Distance to first blocking thing along a ray, what it is, and first nukage distance."""
+    def body_ray(self, obs: Obs, rel_deg: float) -> tuple[float, str, float | None]:
+        """Clearance for the player's whole body in a direction: the centre ray plus two rays
+        through the shoulders. A thin centre ray reports open space while a shoulder is already
+        against a corner, and the player cannot move. Doors, switches and the exit keep the
+        centre reading, since use acts on what is straight ahead."""
+        c = self.ray(obs, rel_deg)
+        if c[1] != "wall" and not c[1].startswith("ledge") and c[1] != "open" and c[0] <= USE_RANGE * 2:
+            return c
+        best, side = c, None
+        for off, name in ((BODY_RADIUS, "left"), (-BODY_RADIUS, "right")):
+            r = self.ray(obs, rel_deg, offset=off)
+            if r[0] < best[0] - 8:
+                best, side = r, name
+        if side is None:
+            return c
+        return best[0], f"{best[1]} at the {side} shoulder", c[2]
+
+    def ray(self, obs: Obs, rel_deg: float, offset: float = 0.0) -> tuple[float, str, float | None]:
+        d, kind, nuk, thing = self._ray(obs, rel_deg, offset)
+        if thing is not None and thing[0] < d:
+            return thing[0], thing[1], (nuk if nuk is not None and nuk < thing[0] else None)
+        return d, kind, nuk
+
+    def _ray(self, obs: Obs, rel_deg: float, offset: float = 0.0):
+        """Distance to first blocking thing along a ray, what it is, and first nukage distance.
+        offset: start the ray this many units to the left of the player (negative = right)."""
         th = math.radians(obs.angle + rel_deg)
         dx, dy = math.cos(th), math.sin(th)
+        ox, oy = obs.x - dy * offset, obs.y + dx * offset
         ex, ey = self.bx - self.ax, self.by - self.ay
         den = dx * ey - dy * ex
         with np.errstate(divide="ignore", invalid="ignore"):
-            t = ((self.ax - obs.x) * ey - (self.ay - obs.y) * ex) / den
-            u = ((self.ax - obs.x) * dy - (self.ay - obs.y) * dx) / den
+            t = ((self.ax - ox) * ey - (self.ay - oy) * ex) / den
+            u = ((self.ax - ox) * dy - (self.ay - oy) * dx) / den
         hit = (np.abs(den) > 1e-9) & (t > 0.5) & (t < MAX_RAY) & (u >= 0) & (u <= 1)
         nukage = None
+        # solid decorations as circles; Doom collides square boxes, a circle is close enough here
+        thing = None
+        for so in obs.solids:
+            r = SOLID_DECOR[so.name]
+            fx, fy = so.x - ox, so.y - oy
+            along = fx * dx + fy * dy
+            perp2 = fx * fx + fy * fy - along * along
+            if along > 0 and perp2 < r * r:
+                d = along - math.sqrt(r * r - perp2)
+                if thing is None or d < thing[0]:
+                    thing = (max(d, 0.0), DECOR_NAMES.get(so.name, "pillar"))
         for i in np.argsort(np.where(hit, t, np.inf))[: int(hit.sum())]:
             d = float(t[i])
             if self.special[i] in EXIT_SPECIALS:
-                return d, "exit switch", nukage
+                return d, "exit switch", nukage, thing
             if i in self.switch_kind and self.solid[i]:
-                return d, self.switch_kind[i], nukage
+                return d, self.switch_kind[i], nukage, thing
             if i in self.locked and self.locked[i] not in self.keys_held(obs):
-                return d, f"door (locked, needs {self.locked[i]} key)", nukage
+                return d, f"door (locked, needs {self.locked[i]} key)", nukage, thing
             if self.solid[i]:
-                return d, "wall", nukage
+                return d, "wall", nukage, thing
             # den < 0: the ray goes from the line's right (front) side to its left (back) side
             f, b = int(self.front[i]), int(self.back[i])
             cur, nxt = (f, b) if den[i] < 0 else (b, f)
@@ -88,13 +127,13 @@ class Perception:
                     if state == "opening":            # Doom doors rise 2 units per tic
                         eta = max(0.0, (self.grid.ceil_s[door] - now) / 2 / 35)
                         state = f"opening, fully open in about {max(0.5, round(eta * 2) / 2):g} s"
-                    return d, f"door ({state})", nukage
-                return d, "wall", nukage
+                    return d, f"door ({state})", nukage, thing
+                return d, "wall", nukage, thing
             if nf - cf > MAX_STEP:
-                return d, "ledge too high to climb", nukage
+                return d, "ledge too high to climb", nukage, thing
             if nukage is None and self.m.special[nxt] in DAMAGE_SECTORS:
                 nukage = d
-        return float(MAX_RAY), "open", nukage
+        return float(MAX_RAY), "open", nukage, thing
 
     # -- route compass ----------------------------------------------------------
     def keys_held(self, obs: Obs) -> set[str]:
@@ -165,7 +204,8 @@ class Perception:
         weapon = WEAPON_NAMES.get(obs.weapon, "fist")
         self._advance(obs)
         parts = [f"Health {hp:.0f}, armor {obs.armor:.0f}. Weapon: {weapon}; "
-                 f"{obs.bullets:.0f} bullets, {obs.shells:.0f} shells."]
+                 f"{obs.bullets:.0f} bullets, {obs.shells:.0f} shells"
+                 + (f", {obs.rockets:.0f} rockets." if obs.rockets > 0 else ".")]
         held = sorted(self.keys_held(obs))
         if held:
             parts[0] += f" Keys: {', '.join(held)}."
@@ -189,7 +229,7 @@ class Perception:
 
         rays, hazard = [], None
         for name, rel in RAYS:
-            d, kind, nuk = self.ray(obs, rel)
+            d, kind, nuk = self.body_ray(obs, rel)
             if kind in ("door (closed)", "exit switch") and d <= USE_RANGE:
                 kind += ", within use reach"
             rays.append(f"{name} {d:.0f} {kind}" if kind != "open" else f"{name} open")
@@ -219,8 +259,13 @@ class Perception:
         if self.prev is not None and last_cmd:
             moved = math.hypot(obs.x - self.prev.x, obs.y - self.prev.y)
             dmg = obs.damage_taken - self.prev.damage_taken
+            blocked = last_cmd in ("forward", "back", "strafe_left", "strafe_right") and moved < 10
+            self.history = (self.history + [(last_cmd + (" (blocked)" if blocked else ""), moved)])[-HISTORY:]
+            if len(self.history) >= 2:
+                parts.append("Recent commands, oldest first: " + ", ".join(c for c, _ in self.history)
+                             + f"; moved {sum(m for _, m in self.history):.0f} units in total.")
             note = f"Last command: {last_cmd}, moved {moved:.0f} units"
-            if last_cmd in ("forward", "back", "strafe_left", "strafe_right") and moved < 10:
+            if blocked:
                 note += " (blocked)"
             parts.append(note + (f", took {dmg:.0f} damage." if dmg > 0 else "."))
         self.prev = obs
@@ -230,6 +275,7 @@ class Perception:
     def reset(self) -> None:
         self.route, self.idx, self.prev = None, 0, None
         self.door_ceil_prev = {}
+        self.history = []
         self.stage = 0
 
 

@@ -11,12 +11,13 @@ B = vzd.Button
 V = vzd.GameVariable
 
 BUTTONS = [B.ATTACK, B.USE, B.MOVE_FORWARD, B.MOVE_BACKWARD, B.MOVE_LEFT, B.MOVE_RIGHT,
-           B.SPEED, B.TURN_LEFT_RIGHT_DELTA, B.SELECT_WEAPON1, B.SELECT_WEAPON2, B.SELECT_WEAPON3]
+           B.SPEED, B.TURN_LEFT_RIGHT_DELTA, B.SELECT_WEAPON1, B.SELECT_WEAPON2, B.SELECT_WEAPON3,
+           B.SELECT_WEAPON4, B.SELECT_WEAPON5]
 BI = {b: i for i, b in enumerate(BUTTONS)}
 
 VARS = [V.POSITION_X, V.POSITION_Y, V.POSITION_Z, V.ANGLE, V.HEALTH, V.ARMOR, V.DEAD,
         V.SELECTED_WEAPON, V.AMMO2, V.AMMO3, V.WEAPON2, V.WEAPON3,
-        V.KILLCOUNT, V.DAMAGE_TAKEN]
+        V.KILLCOUNT, V.DAMAGE_TAKEN, V.AMMO5, V.WEAPON4, V.WEAPON5]   # AMMO5 = rockets
 
 MONSTER_NAMES = {"Zombieman": "zombieman", "ShotgunGuy": "shotgun guy", "DoomImp": "imp",
                  "Demon": "demon", "Spectre": "spectre", "LostSoul": "lost soul",
@@ -25,11 +26,19 @@ PICKUP_NAMES = {"Stimpack": "stimpack", "Medikit": "medikit", "HealthBonus": "he
                 "ArmorBonus": "armor bonus", "GreenArmor": "green armor", "BlueArmor": "blue armor",
                 "Clip": "ammo clip", "ClipBox": "box of bullets", "Shell": "shells", "ShellBox": "box of shells",
                 "Shotgun": "shotgun", "Chaingun": "chaingun",
+                "RocketLauncher": "rocket launcher", "RocketAmmo": "rocket", "RocketBox": "box of rockets",
                 "RedCard": "red keycard", "BlueCard": "blue keycard", "YellowCard": "yellow keycard",
                 "RedSkull": "red skull key", "BlueSkull": "blue skull key", "YellowSkull": "yellow skull key"}
 KEY_OBJECTS = {"RedCard": "red", "RedSkull": "red", "BlueCard": "blue", "BlueSkull": "blue",
                "YellowCard": "yellow", "YellowSkull": "yellow"}
-WEAPON_NAMES = {1: "fist", 2: "pistol", 3: "shotgun"}
+# Solid decorations: they block movement like walls but are not map lines. Radius in map units.
+SOLID_DECOR = {"ExplosiveBarrel": 10, "Column": 16, "TechLamp": 16, "TechLamp2": 16, "TechPillar": 16,
+               "Candelabra": 16, "TallGreenColumn": 16, "ShortGreenColumn": 16, "TallRedColumn": 16,
+               "ShortRedColumn": 16, "SkullColumn": 16, "HeartColumn": 16, "EvilEye": 16, "FloatingSkull": 16,
+               "TorchTree": 16, "BigTree": 32, "Stalagtite": 16, "BlueTorch": 16, "GreenTorch": 16, "RedTorch": 16,
+               "ShortBlueTorch": 16, "ShortGreenTorch": 16, "ShortRedTorch": 16}
+DECOR_NAMES = {"ExplosiveBarrel": "barrel"}       # everything else reads as "pillar"
+WEAPON_NAMES = {1: "fist", 2: "pistol", 3: "shotgun", 4: "chaingun", 5: "rocket launcher"}
 
 
 @dataclass
@@ -57,9 +66,13 @@ class Obs:
     has_shotgun: bool
     kills: int
     damage_taken: float
+    rockets: float = 0
+    has_chaingun: bool = False
+    has_launcher: bool = False
     sector: int = -1
     monsters: list[Thing] = field(default_factory=list)   # alive monsters; visible flag from labels buffer
     pickups: list[Thing] = field(default_factory=list)
+    solids: list[Thing] = field(default_factory=list)    # solid decorations (barrels, pillars)
     heights: dict[int, tuple[float, float]] = field(default_factory=dict)  # live floor/ceiling per sector
     keys_present: set[str] = field(default_factory=set)   # key colours still lying in the map
     screen: np.ndarray | None = None
@@ -109,13 +122,16 @@ def observe(g: vzd.DoomGame, tic: int) -> Obs | None:
     v = s.game_variables
     obs = Obs(tic=tic, x=v[0], y=v[1], angle=v[3], health=v[4], armor=v[5], dead=bool(v[6]),
               weapon=int(v[7]), bullets=v[8], shells=v[9], has_shotgun=bool(v[11]),
-              kills=int(v[12]), damage_taken=v[13], screen=s.screen_buffer)
+              kills=int(v[12]), damage_taken=v[13], rockets=v[14], has_chaingun=bool(v[15]),
+              has_launcher=bool(v[16]), screen=s.screen_buffer)
     visible = {l.object_id for l in s.labels}
     for o in s.objects:
         if o.category == "Self":
             obs.sector = o.sector_id
         elif o.category == "Monster":
             obs.monsters.append(Thing(o.id, o.name, o.category, o.position_x, o.position_y, o.id in visible))
+        elif o.name in SOLID_DECOR:
+            obs.solids.append(Thing(o.id, o.name, o.category, o.position_x, o.position_y, o.id in visible))
         elif o.name in PICKUP_NAMES:
             if o.name in KEY_OBJECTS:
                 obs.keys_present.add(KEY_OBJECTS[o.name])

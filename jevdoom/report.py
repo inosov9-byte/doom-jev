@@ -15,7 +15,9 @@ from pathlib import Path
 ARM_LABEL = {"jev-local": "Jev local (Qwen 0.8B, laptop GPU)", "jev-hosted": "Jev hosted (Qwen3.6-35B)",
              "jev-hosted-gemma": "Jev hosted (Gemma-4-26B)", "haiku": "Claude Haiku 5.5",
              "haiku-think": "Claude Haiku 5.5 + thinking", "rules": "Rules expert (teacher, instant)",
-             "rules-lag": "Rules expert at 0.7 s per decision"}
+             "rules-lag": "Rules expert at 0.7 s per decision",
+             "rules-lag-100": "Rules expert at 0.1 s per decision", "rules-lag-200": "Rules expert at 0.2 s per decision",
+             "rules-lag-350": "Rules expert at 0.35 s per decision"}
 
 
 def load_runs(folder: Path) -> list[dict]:

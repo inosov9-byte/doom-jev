@@ -147,7 +147,7 @@ class MockEngine(Engine):
 QWEN_HOSTED = "featherless-ai/Qwen3.6-35B-A3B-classifier"
 GEMMA_HOSTED = "featherless-ai/gemma-4-26B-A4B-classifier"
 # Typical latencies measured on this setup, used only by --dry-run mocks.
-MOCK_LATENCY = {"rules": 0.05, "rules-lag": 0.7, "jev-local": 0.7, "jev-hosted": 0.85, "jev-hosted-gemma": 1.35, "haiku": 0.8, "haiku-think": 2.0}
+MOCK_LATENCY = {"rules": 0.05, "rules-lag": 0.7, **{"rules-lag-100": 0.1, "rules-lag-200": 0.2, "rules-lag-350": 0.35}, "jev-local": 0.7, "jev-hosted": 0.85, "jev-hosted-gemma": 1.35, "haiku": 0.8, "haiku-think": 2.0}
 
 
 def make_engine(arm: str, local_url: str = LOCAL_URL, dry_run: bool = False, seed: int = 0) -> Engine:
@@ -158,6 +158,8 @@ def make_engine(arm: str, local_url: str = LOCAL_URL, dry_run: bool = False, see
         return RulesEngine()
     if arm == "rules-lag":
         return RulesEngine("rules-lag", lag=0.7)
+    if arm in LAG_SWEEP:          # latency sweep: the same expert with a fixed decision delay
+        return RulesEngine(arm, lag=LAG_SWEEP[arm])
     if arm == "jev-local":
         return JevEngine(arm, local_url, "student", student_prompt=True)
     if arm == "jev-hosted":
@@ -171,4 +173,5 @@ def make_engine(arm: str, local_url: str = LOCAL_URL, dry_run: bool = False, see
     raise ValueError(f"unknown arm {arm!r}; choose from {ARMS}")
 
 
-ARMS = ["jev-local", "jev-hosted", "jev-hosted-gemma", "haiku", "haiku-think", "rules", "rules-lag"]
+LAG_SWEEP = {"rules-lag-100": 0.1, "rules-lag-200": 0.2, "rules-lag-350": 0.35}
+ARMS = ["jev-local", "jev-hosted", "jev-hosted-gemma", "haiku", "haiku-think", "rules", "rules-lag", *LAG_SWEEP]
