@@ -6,7 +6,8 @@ The 5 and 30 degree steps were added after measuring aim error: with 15/45/90 on
 aiming turns could not get within 7 degrees of the target, and far targets 8-11 degrees off
 could not be centred at all.
 Moves last about one decision interval (20 tics, 0.57 s); forward_short is 6 tics for precise
-approaches; fire_strafe_* fire while sidestepping (the standard way to dodge projectiles). A new command
+approaches; fire_strafe_* fire while sidestepping (the standard way to dodge projectiles); turn_*_N_fire
+turn by N degrees (5/15/30) on the first tic and then fire like `fire`. A new command
 cancels whatever is still running, so the player keeps moving between decisions.
 Distances below were measured in E1M1 with run held, including the slide after release.
 
@@ -36,12 +37,17 @@ COMMANDS: dict[str, str | None] = {
     "fire_strafe_left": "shoot while sidestepping left, to dodge",
     "fire_strafe_right": "shoot while sidestepping right, to dodge",
     "use": "open a door or press a switch within use reach straight ahead",
+    # Aim and shoot in one decision (2026-10-18): 54% of the expert's E1M1 shots and 64% on E1M2
+    # came right after a turn, i.e. two decisions per shot. Appended last so the first 20 option
+    # letters stay where trained students expect them.
+    **{f"turn_{side}_{a}_fire": f"turn {side} {a} degrees, then shoot" for side in ("left", "right") for a in (5, 15, 30)},
 }
 COMMAND_IDS = list(COMMANDS)
 
 # Execution parameters (degrees: positive = left; tics at 35 per second)
 TURN_DEG = {**{f"turn_left_{a}": a for a in (5, 15, 30, 45, 90)},
             **{f"turn_right_{a}": -a for a in (5, 15, 30, 45, 90)}, "turn_around": 180}
+TURN_FIRE_DEG = {f"turn_{side}_{a}_fire": a * (1 if side == "left" else -1) for side in ("left", "right") for a in (5, 15, 30)}
 MOVE_TICS = 20
 SHORT_MOVE_TICS = 6
 FIRE_TICS = 20          # about one decision interval: keep shooting until the next command

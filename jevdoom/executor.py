@@ -6,11 +6,17 @@ player stands still.
 """
 from __future__ import annotations
 
-from .commands import FIRE_TICS, MOVE_TICS, SHORT_MOVE_TICS, TURN_DEG, USE_TICS
+from .commands import FIRE_TICS, MOVE_TICS, SHORT_MOVE_TICS, TURN_DEG, TURN_FIRE_DEG, USE_TICS
 from .env import B, BI, Obs, blank_action
 
+import os
+
 MAX_TURN_PER_TIC = 30.0
-SETTLE_TICS = 8          # a move/fire/use counts as applied after this many tics
+# A move/fire/use counts as applied after this many tics; the next decision's snapshot is taken then.
+# Lower = overlap: the snapshot goes out while the previous command is still running, so the answer
+# lands sooner (JEVDOOM_SETTLE_TICS, experiment 2026-10-18; 8 was the fix for the laptop's
+# oscillation bug, which came from snapshots taken before a command had any effect).
+SETTLE_TICS = int(os.environ.get("JEVDOOM_SETTLE_TICS", "8"))
 MOVE_BUTTON = {"forward": B.MOVE_FORWARD, "forward_short": B.MOVE_FORWARD, "back": B.MOVE_BACKWARD,
                "strafe_left": B.MOVE_LEFT, "strafe_right": B.MOVE_RIGHT}
 
@@ -25,8 +31,10 @@ class Executor:
     def start(self, cmd: str) -> None:
         self.cmd = cmd
         self.elapsed = 0
-        self.turn_left_deg = float(TURN_DEG.get(cmd, 0))
-        if cmd in TURN_DEG:
+        self.turn_left_deg = float(TURN_DEG.get(cmd, TURN_FIRE_DEG.get(cmd, 0)))
+        if cmd in TURN_FIRE_DEG:
+            self.left = FIRE_TICS + 1                 # one tic to turn (at most 30 degrees), then fire
+        elif cmd in TURN_DEG:
             self.left = int(abs(self.turn_left_deg) // MAX_TURN_PER_TIC) + 2
         elif cmd == "forward_short":
             self.left = SHORT_MOVE_TICS
@@ -61,7 +69,13 @@ class Executor:
         self.left -= 1
         self.elapsed += 1
         c = self.cmd
-        if c in TURN_DEG:
+        if c in TURN_FIRE_DEG:
+            if abs(self.turn_left_deg) > 1e-6:
+                a[BI[B.TURN_LEFT_RIGHT_DELTA]] = -self.turn_left_deg
+                self.turn_left_deg = 0.0
+            else:
+                a[BI[B.ATTACK]] = 1
+        elif c in TURN_DEG:
             if abs(self.turn_left_deg) > 1e-6:
                 d = max(-MAX_TURN_PER_TIC, min(MAX_TURN_PER_TIC, self.turn_left_deg))
                 a[BI[B.TURN_LEFT_RIGHT_DELTA]] = -d       # positive delta turns right

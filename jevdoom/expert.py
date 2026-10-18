@@ -143,10 +143,13 @@ def decide(state: str) -> str:
     if threats:
         t = min(threats, key=lambda e: e["dist"])
         if t["crosshair"]:
-            if f["damage"] > 0 and f["last"] in ("fire", "fire_strafe_left", "fire_strafe_right"):
+            if f["damage"] > 0 and "fire" in (f["last"] or ""):
                 return _open_side(f, "fire_strafe_")       # getting hit while shooting: dodge and keep firing
             return "fire"
-        return turn_toward(t["angle"])
+        turn = turn_toward(t["angle"])
+        if turn.endswith(("_5", "_15", "_30")):
+            return turn + "_fire"                          # small aim correction: aim and shoot in one decision
+        return turn
 
     # 3. shot from out of view: face the attacker if we can fight back
     if f["attacker"] is not None and has_ammo and not sprint:
@@ -194,7 +197,7 @@ def decide_soft(state: str, smoothing: float = 0.05, temperature: float = 6.0) -
     choice = decide(state)
     p = {c: 0.0 for c in COMMAND_IDS}
     a = _last_turn_angle[0]
-    if choice.startswith("turn_") and choice != "turn_around" and a is not None:
+    if choice.startswith("turn_") and choice != "turn_around" and not choice.endswith("_fire") and a is not None:
         side = "left" if a > 0 else "right"
         w = {f"turn_{side}_{st}": math.exp(-abs(abs(a) - st) / temperature) for st in STEPS}
         z = sum(w.values())
