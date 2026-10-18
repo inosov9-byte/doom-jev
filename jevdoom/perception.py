@@ -6,6 +6,7 @@ heights, and the WAD geometry for raycasts and the route compass.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import numpy as np
@@ -54,6 +55,9 @@ class Perception:
         self.prev_cmd: str | None = None
         self.history: list[tuple[str, float]] = []   # (command, units moved) for recent decisions
         self.door_ceil_prev: dict[int, float] = {}   # door sector -> ceiling height at the previous description
+        self.live_grids: dict[int, NavGrid] = {}     # stage -> grid rebuilt from live sector heights
+        self.at_goal = False                          # close to the goal with a clear walk to it
+        self.live_check_tic = -10**9
 
     # -- raycasting -----------------------------------------------------------
     def body_ray(self, obs: Obs, rel_deg: float) -> tuple[float, str, float | None]:
@@ -171,32 +175,64 @@ class Perception:
             return None
         target, left = t
         g = self.goal
-        if left < 120:     # at the end of the route: point at the goal itself
+        if self.at_goal:   # at the end of the route with a clear walk: point at the goal itself
             d = obs.dist_to(*g.target)
             name = "exit switch" if g.kind == "exit" else g.label
             return f"{name} {d:.0f} away, {_side(obs.bearing_to(*g.target))}"
         return f"{_side(obs.bearing_to(*target))}, {left:.0f} units left"
 
+    LIVE_CHECK_TICS = 35      # compare live sector heights with the route grid at most once a second
+    LIVE_DELTA = 24.0         # a floor or ceiling this far from the grid's value means the map changed
+
+    def _stage_grid(self, obs: Obs) -> NavGrid:
+        """The current stage's planner grid, rebuilt from live sector heights when the map has changed
+        since the grid was built: trap doors that shut, floors raised or lowered by triggers (E1M6, E1M9:
+        the WAD's initial heights routed through a door that closes during play). Manual doors and lifts
+        are left to the grid, which already treats them as passable."""
+        stage = min(self.stage, len(self.goals) - 1)
+        base = self.live_grids.get(stage, self.stage_grids[stage])
+        if obs.tic - self.live_check_tic < self.LIVE_CHECK_TICS or not obs.heights:
+            return base
+        self.live_check_tic = obs.tic
+        wm = self.stage_grids[stage].m
+        skip = wm.door_sectors | wm.lift_sectors
+        changed = [i for i, (f, c) in obs.heights.items()
+                   if i not in skip and i < len(base.m.floor)
+                   and (abs(f - base.m.floor[i]) > self.LIVE_DELTA or abs(c - base.m.ceil[i]) > self.LIVE_DELTA)]
+        if not changed:
+            return base
+        floor, ceil = wm.floor.copy(), wm.ceil.copy()
+        for i, (f, c) in obs.heights.items():
+            if i not in skip and i < len(floor):
+                floor[i], ceil[i] = f, c
+        self.live_grids[stage] = NavGrid(dataclasses.replace(wm, floor=floor, ceil=ceil))
+        self.route, self.idx = None, 0
+        return self.live_grids[stage]
+
     def _route_target(self, obs: Obs):
         pos = (obs.x, obs.y)
+        grid = self._stage_grid(obs)
         if self.route:
             lo, hi = self.idx, min(len(self.route), self.idx + 60)
             best = min(range(lo, hi), key=lambda i: math.dist(pos, self.route[i]))
             self.idx = best
             off = math.dist(pos, self.route[best])
         if not self.route or off > 96:
-            self.route = self.stage_grids[min(self.stage, len(self.goals) - 1)].plan(pos, self.goal.pos)
+            self.route = grid.plan(pos, self.goal.pos)
             self.idx = 0
             if not self.route:
                 return None
         path = self.route
         target = path[min(self.idx + 1, len(path) - 1)]
         for j in range(min(self.idx + 14, len(path) - 1), self.idx, -2):
-            if self.grid.walkable_line(pos, path[j]):
+            if grid.walkable_line(pos, path[j]):        # current stage: later stages may open doors still shut now
                 target = path[j]
                 break
         left = math.dist(pos, path[self.idx]) + path_length(path[self.idx:])
-        if left < 120:
+        # Point at the goal itself only with a clear walk to its standing spot (E1M2 exit: within 120
+        # units the direct line to the switch ran into a wall corner and the expert pushed into it).
+        self.at_goal = left < 120 and grid.walkable_line(pos, self.goal.pos)
+        if self.at_goal:
             target = self.goal.target
         return target, left
 
@@ -279,6 +315,7 @@ class Perception:
         self.door_ceil_prev = {}
         self.history = []
         self.stage = 0
+        self.live_grids, self.live_check_tic = {}, -10**9
 
 
 def _side(b: float, ahead: float = 7.5) -> str:

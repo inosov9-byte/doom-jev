@@ -15,7 +15,7 @@ $env:UV_CACHE_DIR = "$Root\cache\uv"
 
 # Game venv
 if (-not (Test-Path "$Root\venv")) { uv venv -p 3.13 "$Root\venv" -q }
-uv pip install -p "$Root\venv\Scripts\python.exe" -q vizdoom numpy opencv-python imageio-ffmpeg
+uv pip install -p "$Root\venv\Scripts\python.exe" -q vizdoom numpy opencv-python imageio-ffmpeg pillow
 # ffmpeg for run videos (play.py, sbs_video.py call "ffmpeg"): the static build bundled with imageio-ffmpeg.
 # Put $Root\bin on PATH before runs that record video.
 New-Item -ItemType Directory -Force "$Root\bin" | Out-Null

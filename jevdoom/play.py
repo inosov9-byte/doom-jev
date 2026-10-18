@@ -30,7 +30,7 @@ from .env import blank_action, make_game, observe
 from .executor import Executor
 from .jev import LOCAL_URL
 from .perception import Perception
-from .progression import load_or_solve, stage_grids, with_weapon_detours
+from .progression import Subgoal, load_or_solve, stage_grids, with_weapon_detours
 from .wadmap import NavGrid, exit_target, load_map, path_length
 
 TICRATE = 35
@@ -114,7 +114,7 @@ def draw_panel(frame: np.ndarray, info: dict) -> np.ndarray:
             cv2.rectangle(panel, (150, y - 12), (150 + int(230 * p), y + 2), (80, 160, 255), -1)
             put(f"{k:15s} {p:4.2f}", 0.42)
     elif info.get("cmd"):
-        put("(no probabilities: generative engine)", 0.42, (150, 150, 150))
+        put("(no probabilities: rules or generative engine)", 0.42, (150, 150, 150))
     else:
         put("(waiting for the first decision)", 0.42, (150, 150, 150))
     y += 8
@@ -153,7 +153,11 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     run_dir.mkdir(parents=True, exist_ok=True)
     m = load_map(wad, map_name)
     start = next((float(t[0]), float(t[1])) for t in m.things if t[3] == 1)
-    goals = with_weapon_detours(m, load_or_solve(m, start), start)
+    try:
+        goals = with_weapon_detours(m, load_or_solve(m, start), start)
+    except RuntimeError:          # planner found no progression (E1M3/E1M4/E1M7): exit only, compass if any route
+        st, mid, _ = exit_target(m)
+        goals = [Subgoal("exit", "exit", st, mid)]
     grids = stage_grids(m, goals)
     grid = grids[-1]
     perc = Perception(grid, compass=compass, goals=goals, stage_grids=grids)

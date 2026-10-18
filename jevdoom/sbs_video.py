@@ -28,11 +28,16 @@ FONT_B = r"C:\Windows\Fonts\segoeuib.ttf"
 MONO = r"C:\Windows\Fonts\consola.ttf"
 BG = (15, 17, 21)
 ACCENT = {"a": (106, 168, 255), "b": (245, 196, 81)}
-LABEL = {"jev-local": ("JEV", "Qwen3.5-0.8B, fine-tuned · runs on the laptop GPU"),
+LABEL = {"jev-local": ("JEV", "Qwen3.5-4B + LoRA · local RTX 3090 · ~0.1 s per decision"),
+         "rules": ("TEACHER", "hand-written rules reading the same text · instant"),
          "jev-hosted": ("JEV", "Qwen3.6-35B classifier · Featherless API"),
          "jev-hosted-gemma": ("JEV", "Gemma-4-26B classifier · Featherless API"),
          "haiku": ("CLAUDE HAIKU 5.5", "Anthropic API · structured output"),
          "haiku-think": ("CLAUDE HAIKU 5.5 + THINKING", "Anthropic API · structured output")}
+CAPTION = {"jev-local": "Jev: a language model, one pass over the text, a probability per command.",
+           "rules": "Teacher: hand-written rules over the same text; Jev learned by copying it.",
+           "haiku": "Haiku: a generative model, writes its pick as JSON.",
+           "haiku-think": "Haiku: a generative model, writes its pick as JSON."}
 
 
 def font(path, size):
@@ -106,10 +111,8 @@ def compose(a: Run, b: Run, t_frame: int, layout: str, title: str, subtitle: str
                 d.text((x + (w - tw) / 2, y + 50 + pil.height / 2 - 18), txt, font=f, fill=(255, 255, 255))
         d.text((x + 20, y + h - 30), stat, font=font(MONO, 20), fill=(201, 207, 218))
     if layout == "feed":
-        d.text((40, H - 92), "Jev: a classifier, one pass over the state, reads a probability per command.",
-               font=font(FONT, 21), fill=(154, 163, 178))
-        d.text((40, H - 62), f"Haiku: a generative model, writes its pick as JSON. Same state text, same {N_CMD} commands.",
-               font=font(FONT, 21), fill=(154, 163, 178))
+        for i, run in enumerate((a, b)):
+            d.text((40, H - 92 + 30 * i), CAPTION.get(run.summary["arm"], ""), font=font(FONT, 21), fill=(154, 163, 178))
     t = t_frame / FPS
     clock = f"{int(t // 60)}:{t % 60:04.1f}  real time"
     d.text((W - 40 - d.textlength(clock, font=font(MONO, 24)), 92), clock, font=font(MONO, 24), fill=(154, 163, 178))
@@ -121,7 +124,7 @@ def end_card(a: Run, b: Run, layout: str) -> np.ndarray:
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
     y = H // 2 - 220
-    d.text((60, y), f"Same game, perception and {N_CMD} commands", font=font(FONT_B, 40), fill=(235, 238, 243))
+    d.text((60, y), "Same game, perception and commands", font=font(FONT_B, 40), fill=(235, 238, 243))
     d.text((60, y + 56), "The decision engine is the only difference.", font=font(FONT, 30), fill=(154, 163, 178))
     y += 150
     for key, run in (("a", a), ("b", b)):

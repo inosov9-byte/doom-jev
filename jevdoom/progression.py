@@ -53,13 +53,40 @@ def world(m: MapData, keys: frozenset, opened: frozenset) -> MapData:
         if l.special in LIFT_TRIGGERS and l.tag:
             lifts |= {i for i, t in enumerate(m.sector_tag) if t == l.tag}
     door_tags = {l.tag for l in m.lines if l.special in DOOR_TRIGGERS}
+    stair_step = {l.tag: STAIR_SPECIALS[l.special] for l in m.lines if l.special in STAIR_SPECIALS and l.tag}
+    floor = m.floor
     for tag in opened:
         secs = {i for i, t in enumerate(m.sector_tag) if t == tag}
-        if tag in door_tags:
+        if tag in stair_step:
+            floor = _build_stairs(m, secs, stair_step[tag], floor.copy() if floor is m.floor else floor)
+        elif tag in door_tags:
             doors |= secs
         else:
             lifts |= secs
-    return dataclasses.replace(m, door_sectors=doors, lift_sectors=lifts)
+    return dataclasses.replace(m, door_sectors=doors, lift_sectors=lifts, floor=floor)
+
+
+STAIR_SPECIALS = {7: 8, 8: 8, 100: 16, 127: 16}   # stair builders -> step height (100, 127: turbo 16)
+
+
+def _build_stairs(m: MapData, start: set[int], step: float, floor: np.ndarray) -> np.ndarray:
+    """Floors after a stair builder fires (Doom's EV_BuildStairs): each tagged sector rises by one step;
+    the next step is the sector behind a two-sided line whose front is the current step, with the same
+    floor texture; it rises one more step. E1M3's climb to the exit is such a staircase; the planner
+    used to raise only the tagged first step, so the 88-unit ledge looked unclimbable."""
+    if not m.floor_flat:
+        return floor
+    done = set()
+    for s in start:
+        cur, h = s, m.floor[s] + step
+        while cur is not None and cur not in done:
+            done.add(cur)
+            floor[cur] = h
+            nxt = next((l.back for l in m.lines
+                        if l.front == cur and l.back >= 0 and l.back not in done
+                        and m.floor_flat[l.back] == m.floor_flat[cur]), None)
+            cur, h = nxt, h + step
+    return floor
 
 
 def _stand_points(line, dist=40.0):

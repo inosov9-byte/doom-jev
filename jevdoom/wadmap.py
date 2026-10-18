@@ -15,6 +15,15 @@ import numpy as np
 
 CELL = 16
 PLAYER_RADIUS = 17          # Doom player radius is 16; one unit of margin
+# Solid decorations by WAD thing type -> radius. The planner used to see only walls, so routes ran
+# through pillars and barrels (E1M9: a pillar beside a closed door; E1M1: the start barrel).
+SOLID_THINGS = {2035: 10,                                              # barrel
+                48: 16, 2028: 16, 85: 16, 86: 16,                      # tech pillar, lamps
+                30: 16, 31: 16, 32: 16, 33: 16, 36: 16, 37: 16,        # green / red columns
+                41: 16, 42: 16, 43: 16, 47: 16, 54: 32, 35: 16,        # eye, skull rock, trees, stalagmite, candelabra
+                44: 16, 45: 16, 46: 16, 55: 16, 56: 16, 57: 16,        # torches
+                25: 16, 26: 16, 27: 16, 28: 16}                        # impaled bodies
+SKILL_FLAG = {1: 1, 2: 1, 3: 2, 4: 4, 5: 4}                             # WAD thing flags per skill
 MAX_STEP = 24
 PLAYER_HEIGHT = 56
 DOOR_SPECIALS = {1, 26, 27, 28, 31, 32, 33, 34, 117, 118}
@@ -46,6 +55,7 @@ class MapData:
     door_sectors: set[int] = field(default_factory=set)
     sector_tag: np.ndarray | None = None
     lift_sectors: set[int] = field(default_factory=set)      # moving floors: step limits ignored
+    floor_flat: list[str] | None = None                       # floor texture per sector (stair building follows it)
 
     @property
     def exit_lines(self) -> list[Line]:
@@ -77,7 +87,8 @@ def load_map(wad_path: str, map_name: str) -> MapData:
                           sides[s1][5], sides[s2][5] if s2 != -1 else -1))
     m = MapData(map_name, lines,
                 np.array([s[0] for s in secs], float), np.array([s[1] for s in secs], float),
-                np.array([s[5] for s in secs], int), things, sector_tag=np.array([s[6] for s in secs], int))
+                np.array([s[5] for s in secs], int), things, sector_tag=np.array([s[6] for s in secs], int),
+                floor_flat=[s[2].rstrip(b"\0").decode("ascii", "replace") for s in secs])
     for l in lines:
         if l.special in DOOR_SPECIALS and l.back != -1:
             m.door_sectors.add(l.back)
@@ -115,6 +126,10 @@ class NavGrid:
         self.floor = np.where(inside, floor[sec], np.nan)
         headroom = np.where(inside, ceil[sec] - floor[sec], 0)
         self.blocked = ~inside | (headroom < PLAYER_HEIGHT)
+        for t in m.things:                                  # solid decorations present at skill 3, single player
+            r = SOLID_THINGS.get(t[3])
+            if r and (len(t) < 5 or (t[4] & SKILL_FLAG[3] and not t[4] & 16)):
+                self.blocked |= np.hypot(self.cx - t[0], self.cy - t[1]) < r + PLAYER_RADIUS
         self.cost = np.ones((self.h, self.w))
         self.cost[inside & np.isin(m.special[sec], list(DAMAGE_SECTORS))] = 25.0
         for l in m.lines:
