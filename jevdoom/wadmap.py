@@ -199,7 +199,14 @@ class NavGrid:
     def _ledge_crossings(self) -> list[tuple[float, float, float, float, set]]:
         """Two-sided lines that cannot be crossed in at least one direction."""
         out = []
+        # A manual door opens only from a face that carries the door special: E1M5's door at (-576, 1200)
+        # has a bare face on one side, and the expert pressed use on it until it died.
+        manual = {l.back for l in self.m.lines if l.special in DOOR_SPECIALS and l.back != -1
+                  and self.m.sector_tag[l.back] == 0}
         for l in self.m.lines:
+            if l.back != -1 and not l.flags & 1 and l.special not in DOOR_SPECIALS                     and (l.front in manual) != (l.back in manual):
+                out.append((*l.v1, *l.v2, {l.back if l.front in manual else l.front}))
+                continue
             if l.back == -1 or (l.flags & 1):
                 continue
             if l.front in self.m.lift_sectors or l.back in self.m.lift_sectors:
