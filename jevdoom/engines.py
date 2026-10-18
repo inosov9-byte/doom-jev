@@ -173,5 +173,5 @@ def make_engine(arm: str, local_url: str = LOCAL_URL, dry_run: bool = False, see
     raise ValueError(f"unknown arm {arm!r}; choose from {ARMS}")
 
 
-LAG_SWEEP = {"rules-lag-100": 0.1, "rules-lag-200": 0.2, "rules-lag-350": 0.35}
+LAG_SWEEP = {"rules-lag-50": 0.05, "rules-lag-100": 0.1, "rules-lag-200": 0.2, "rules-lag-350": 0.35}
 ARMS = ["jev-local", "jev-hosted", "jev-hosted-gemma", "haiku", "haiku-think", "rules", "rules-lag", *LAG_SWEEP]
