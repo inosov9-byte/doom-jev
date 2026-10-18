@@ -72,6 +72,8 @@ def parse_state(s: str) -> dict:
                 f["rays"][r.group(1)] = (1500.0, "open") if r.group(2) == "open" else (float(r.group(3)), r.group(4))
     m = re.search(r"Shotgun reloading, ready in ([\d.]+) s", s)
     f["reload"] = float(m.group(1)) if m else 0.0
+    m = re.search(r"Fireball incoming in ([\d.]+) s, sidestep (left|right)\.", s)
+    f["incoming"] = (float(m.group(1)), m.group(2)) if m else None
     m = re.search(r"Escape from [a-z ]+: (\d+) units open, ([^.]+)\.", s)
     f["escape"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     m = re.search(r"Cover from [a-z ]+: (\d+) units, ([^.]+)\.", s)
@@ -159,6 +161,15 @@ def decide(state: str) -> str:
             return "use" if d <= USE_REACH else ("forward_short" if d < 200 else "forward")
         return "forward_short" if d < 200 else "forward"     # key or trigger line: walk onto it
 
+    # 1b. a fireball on course to hit: sidestep off its line first (E1M8: 585 damage taken from Barons
+    #     at 300+ units, all fireballs). Blocked that way: the other side.
+    if f["incoming"] is not None:
+        side = f["incoming"][1]
+        other = "right" if side == "left" else "left"
+        if f["rays"].get(f"60 {side}", (1500.0, ""))[0] < 40 and f["rays"].get(f"60 {other}", (0.0, ""))[0] >= 40:
+            side = other
+        return "strafe_" + side
+
     # 2. enemies within range (fist range when out of ammo). Near the exit or at low health,
     #    run instead: the switch ends the level, and a fight at 0.7 s per decision is a bad trade.
     #    E1M2: running past an imp and two zombiemen into the exit room killed the expert from behind
@@ -209,12 +220,14 @@ def decide(state: str) -> str:
                 # Reloading: back off facing them (running backwards is as fast as forwards, a Baron walks
                 # at half that). Against a wall, strafe toward the open side the escape hint names; never
                 # turn away (the expert spun between escape turns and "shot from out of view" turns).
-                if f["rays"].get("behind", (0.0, ""))[0] > 120:
-                    return "back"
+                # The escape hint weighs openness: E1M8's star tips are dead ends. Move toward it without
+                # turning: back when it lies behind, strafe when it lies to a side.
                 a = f["escape"][1] if f["escape"] is not None else None
-                if a is not None and abs(a) >= 20:
-                    return "strafe_left" if a > 0 else "strafe_right"
-                return _dodge(f)
+                if a is None:
+                    return "back" if f["rays"].get("behind", (0.0, ""))[0] > 120 else _dodge(f)
+                if abs(a) >= 120:
+                    return "back"
+                return "strafe_left" if a > 0 else "strafe_right"
             if t["crosshair"]:
                 if t["dist"] > BOSS_FAR:
                     return "forward_short"

@@ -77,6 +77,7 @@ class Obs:
     monsters: list[Thing] = field(default_factory=list)   # alive monsters; visible flag from labels buffer
     pickups: list[Thing] = field(default_factory=list)
     solids: list[Thing] = field(default_factory=list)    # solid decorations (barrels, pillars)
+    projectiles: list[tuple] = field(default_factory=list)  # (name, x, y, vx, vy) per tic: fireballs in flight
     heights: dict[int, tuple[float, float]] = field(default_factory=dict)  # live floor/ceiling per sector
     keys_present: set[str] = field(default_factory=set)   # key colours still lying in the map
     screen: np.ndarray | None = None
@@ -134,6 +135,8 @@ def observe(g: vzd.DoomGame, tic: int) -> Obs | None:
             obs.sector = o.sector_id
         elif o.category == "Monster":
             obs.monsters.append(Thing(o.id, o.name, o.category, o.position_x, o.position_y, o.id in visible))
+        elif o.name.endswith("Ball"):                     # BaronBall, DoomImpBall, CacodemonBall
+            obs.projectiles.append((o.name, o.position_x, o.position_y, o.velocity_x, o.velocity_y))
         elif o.name in SOLID_DECOR:
             obs.solids.append(Thing(o.id, o.name, o.category, o.position_x, o.position_y, o.id in visible))
         elif o.name in PICKUP_NAMES:

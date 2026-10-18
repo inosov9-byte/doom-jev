@@ -214,8 +214,10 @@ class Perception:
         return None
 
     def escape(self, obs: Obs, threats) -> tuple[float, float] | None:
-        """Direction to run from bosses: of the spots 160-320 units away the player can walk to straight,
-        the one farthest from the nearest threat (a running player outpaces a Baron about 2 to 1)."""
+        """Where to back off to from bosses: of the spots 160-320 units away the player can walk to
+        straight, the best on distance from the nearest threat plus openness (free directions around
+        it). Distance alone led into the narrowing tips of E1M8's star room, where the Barons clawed
+        the expert against the walls."""
         grid = self._stage_grid(obs)
         best = None
         for d in (320, 240, 160):
@@ -225,11 +227,39 @@ class Perception:
                 if grid.sector_at(*p) < 0 or not grid.walkable_line((obs.x, obs.y), p):
                     continue
                 gap = min(math.dist(p, (t.x, t.y)) for t in threats)
-                if best is None or gap > best[0]:
-                    best = (gap, float(d), obs.bearing_to(*p))
-            if best and best[0] > 300:
-                break
+                open_dirs = sum(grid.walkable_line(p, (p[0] + 160 * math.cos(math.radians(45 * j)),
+                                                       p[1] + 160 * math.sin(math.radians(45 * j))))
+                                for j in range(8))
+                score = min(gap, 600.0) + 60.0 * open_dirs
+                if best is None or score > best[0]:
+                    best = (score, float(d), obs.bearing_to(*p))
         return None if best is None else (best[1], best[2])
+
+    DODGE_HORIZON = 1.2       # seconds ahead a projectile is worth reporting
+    DODGE_MISS = 44.0         # closest approach that still hits: player radius 16 + fireball ~8-16, margin
+
+    def incoming(self, obs: Obs) -> tuple[float, str] | None:
+        """The soonest projectile whose straight path passes within DODGE_MISS of the player: seconds
+        to closest approach and the sidestep that moves away from its path."""
+        best = None
+        for _name, x, y, vx, vy in obs.projectiles:
+            rx, ry = x - obs.x, y - obs.y
+            v2 = vx * vx + vy * vy
+            if v2 < 1:
+                continue
+            t = -(rx * vx + ry * vy) / v2                       # tics to closest approach
+            if t <= 0 or t > self.DODGE_HORIZON * 35:
+                continue
+            mx, my = rx + vx * t, ry + vy * t                    # projectile relative to player then
+            if math.hypot(mx, my) > self.DODGE_MISS:
+                continue
+            if math.hypot(mx, my) < 4:                           # dead on: any perpendicular
+                mx, my = -vy, vx
+            th = math.radians(obs.angle + 90)                    # strafe_left direction
+            side = "right" if mx * math.cos(th) + my * math.sin(th) > 0 else "left"
+            if best is None or t < best[0]:
+                best = (t / 35, side)
+        return best
 
     # -- route compass ----------------------------------------------------------
     def keys_held(self, obs: Obs) -> set[str]:
@@ -425,6 +455,9 @@ class Perception:
             parts.append("Pickups in view: " + "; ".join(
                 f"{PICKUP_NAMES[p.name]} {obs.dist_to(p.x, p.y):.0f} away, {_side(obs.bearing_to(p.x, p.y))}" for p in items) + ".")
 
+        inc = self.incoming(obs)
+        if inc:
+            parts.append(f"Fireball incoming in {inc[0]:.1f} s, sidestep {inc[1]}.")
         bosses = [mo for mo in vis if mo.name in self.COVER_FROM]
         if bosses:
             cv = self.cover(obs, bosses[0])
