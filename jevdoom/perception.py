@@ -208,6 +208,10 @@ class Perception:
 
     # -- cover ------------------------------------------------------------------
     COVER_FROM = ("BaronOfHell",)            # monsters a cover spot is reported for
+    # Two or more of these with a line of fire: a spot out of sight of all of them is reported too.
+    # Gunmen cannot be dodged; in E1M4's opening room four of them took 71 health in five seconds.
+    SHOOTERS = ("Zombieman", "ShotgunGuy", "DoomImp")
+    SHOOTER_RANGE = 800
     EYE, CHEST = 41.0, 32.0                  # Doom player eye height; a monster's mid height
 
     def _live_heights(self, obs: Obs):
@@ -239,12 +243,15 @@ class Perception:
         return bool(((z >= lo) & (z <= hi)).all())
 
     def cover(self, obs: Obs, threat) -> tuple[float, float] | None:
-        """Nearest spot (distance, bearing) the player can walk to straight that the threat cannot see:
-        behind a pillar, a wall corner or below a ledge (E1M8's Barons)."""
+        """Nearest spot (distance, bearing) the player can walk to straight that the threat (one monster
+        or a list) cannot see: behind a pillar, a wall corner or below a ledge (E1M8's Barons)."""
         grid = self._stage_grid(obs)
         floor, ceil = self._live_heights(obs)
-        tsec = grid.sector_at(threat.x, threat.y)
-        tz = (floor[tsec] if tsec >= 0 else 0.0)
+        threats = threat if isinstance(threat, (list, tuple)) else [threat]
+        tz = []
+        for t in threats:
+            tsec = grid.sector_at(t.x, t.y)
+            tz.append(floor[tsec] if tsec >= 0 else 0.0)
         best = None
         for d in range(48, 257, 32):
             for k in range(12):
@@ -254,7 +261,8 @@ class Perception:
                 if sec < 0 or not grid.walkable_line((obs.x, obs.y), p):
                     continue
                 pz = floor[sec] + self.EYE
-                if any(self._sight_clear(p, pz, (threat.x, threat.y), tz + h, floor, ceil) for h in (self.CHEST, 60.0)):
+                if any(self._sight_clear(p, pz, (t.x, t.y), z + h, floor, ceil)
+                       for t, z in zip(threats, tz) for h in (self.CHEST, 60.0)):
                     continue
                 best = (float(d), obs.bearing_to(*p))
                 break
@@ -482,6 +490,7 @@ class Perception:
             parts[0] += f" Keys: {', '.join(held)}."
 
         vis = sorted((m for m in obs.monsters if m.visible), key=lambda m: obs.dist_to(m.x, m.y))[:3]
+        shooters = []
         if vis:
             enemies = []
             floor, ceil = self._live_heights(obs)
@@ -498,6 +507,8 @@ class Perception:
                 r = 24 if m.name == "BaronOfHell" else 16      # Baron's radius: wide enough to shoot, not re-aim (E1M8)
                 tol = max(3.0, math.degrees(math.atan2(r, max(d, 1))))
                 aim = "in the crosshair" if abs(b) <= tol else _side(b, ahead=0.5)   # exact angle for aiming
+                if m.name in self.SHOOTERS and d <= self.SHOOTER_RANGE:
+                    shooters.append(m)
                 enemies.append(f"{MONSTER_NAMES.get(m.name, m.name)} {d:.0f} away, {aim}")
             parts.append("Enemies in view: " + "; ".join(enemies) + ".")
         else:
@@ -520,6 +531,10 @@ class Perception:
             es = self.escape(obs, bosses)
             if es:
                 parts.append(f"Escape from {name}: {es[0]:.0f} units open, {_side(es[1])}.")
+        elif len(shooters) >= 2:
+            cv = self.cover(obs, shooters)
+            parts.append(f"Cover from {len(shooters)} shooters: {cv[0]:.0f} units, {_side(cv[1])}." if cv
+                         else f"Cover from {len(shooters)} shooters: none near.")
 
         rays, hazard = [], None
         for name, rel in RAYS:

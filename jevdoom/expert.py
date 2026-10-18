@@ -19,6 +19,14 @@ ENGAGE = 250          # fight only close enemies; otherwise keep running the rou
 FIST = 90
 AMMO_ITEMS = ("ammo clip", "box of bullets", "shells", "box of shells", "shotgun")
 HEALTH_ITEMS = ("stimpack", "medikit")      # a health bonus (+1) is not worth a detour
+HEALTH_GAIN = {"stimpack": 10, "medikit": 25}
+ARMOR_ITEMS = ("green armor", "blue armor")  # absorb a third / half of every hit
+# Zombiemen and shotgun guys hit instantly: sidestepping does not dodge a bullet, only killing them or
+# breaking line of sight helps. Left alone at 250-500 units they kept hitting the expert while it ran
+# the route (E1M3 walkway: a zombieman 350 away took 71 -> 18).
+HITSCAN = ("zombieman", "shotgun guy")
+HITSCAN_ENGAGE = 500
+SHOOTERS = HITSCAN + ("imp",)
 MELEE = ("demon", "spectre")   # bite only: keep them from reaching the player
 MELEE_ENGAGE = 450             # demons are fought from this far: they come to the player anyway
 BOSSES = ("baron",)            # fought at any range when in view
@@ -93,6 +101,8 @@ def parse_state(s: str) -> dict:
     f["escape"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     m = re.search(r"Cover from [a-z ]+: (\d+) units, ([^.]+)\.", s)
     f["cover"] = (float(m.group(1)), _angle(m.group(2))) if m else None
+    m = re.search(r"Cover from \d+ shooters: (\d+) units, ([^.]+)\.", s)
+    f["group_cover"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     f["goal"] = "exit"
     m = re.search(r"Route to ([a-z ]+): ([a-z ]+?) (\d+) away, ([^.]+)\.", s)
     if m:
@@ -164,6 +174,17 @@ def _cut_off(f: dict, p: dict) -> bool:
     return kind != "open" and not kind.startswith(("door", "barrel")) and d < p["dist"] - 24
 
 
+def _move_toward(dist: float, angle: float | None) -> str:
+    """Step toward a spot without turning away from what is in front: back, strafe or forward."""
+    if angle is None or abs(angle) >= 135:
+        return "back"
+    if abs(angle) >= 55:
+        return "strafe_left" if angle > 0 else "strafe_right"
+    if abs(angle) >= 20:
+        return turn_toward(angle)
+    return "forward_short" if dist < 120 else "forward"
+
+
 def _go_to(angle: float, dist: float) -> str:
     if abs(angle) >= 7.5:
         return turn_toward(angle)
@@ -209,8 +230,13 @@ def _decide(f: dict) -> str:
     # Demons close the gap fast and only bite: shoot them on the way in rather than walking into them
     # (E1M8's opening: the expert walked into the barrel field to meet the pack).
     melee_reach = MELEE_ENGAGE if has_ammo and not sprint else 0
+    # Not from the edge of a drop with no way back: stopping to aim on E1M3's narrow walkway left the
+    # 100 ms-late expert sliding over the edge into the toxic pit (two seeds of four). Keep walking there.
+    edge = min(f["drops"].values(), default=1e9) < 120
+    hitscan_reach = HITSCAN_ENGAGE if has_ammo and not sprint and not edge else 0
     threats = [e for e in f["enemies"] if e["angle"] is not None
                and (e["dist"] <= reach or (e["kind"] in BOSSES and has_ammo)
+                    or (e["kind"] in HITSCAN and e["dist"] <= hitscan_reach)
                     or (e["kind"] in MELEE and e["dist"] <= melee_reach))]
     if threats:
         # Shotgun guys first among similar distances: one blast takes 9-45 health (E1M4, E1M5 openings).
@@ -241,6 +267,15 @@ def _decide(f: dict) -> str:
             if a is not None and abs(a) >= 30:
                 return turn_toward(a)
             return "forward" if d > 120 else "forward_short"
+        # Two or more gunmen or imps with a line of fire and they are hitting: out of their sight while the
+        # shotgun reloads, back out to fire when it is ready. They follow one at a time (E1M4's opening room:
+        # 71 health gone in five seconds standing in the open). Moves keep facing them: no turning away.
+        shooters = [e for e in f["enemies"] if e["kind"] in SHOOTERS]
+        if (t["kind"] not in BOSSES and f["group_cover"] is not None and len(shooters) >= 2
+                and (f["damage"] > 0 or f["health"] < 50) and (f["reload"] > AIM_LEAD or f["health"] < 30)):
+            move = _move_toward(*f["group_cover"])
+            if not _unsafe(f, move):
+                return move
         if t["kind"] in BOSSES:
             # Baron (E1M8): every hit the expert took came within 250 units (claws, fireballs too close
             # to dodge), none beyond. Kite: back off inside 300, strafe-fire at 300-500, close in beyond.
@@ -279,13 +314,15 @@ def _decide(f: dict) -> str:
                 return "fire"
             return turn_toward(t["angle"])
         if t["crosshair"] and f["reload"] > RELOAD_DODGE and t["dist"] > 110:
-            return _dodge(f)                               # shotgun reloading: move instead of a wasted fire
+            # Shotgun reloading: move instead of a wasted fire. Against a gunman a sidestep dodges
+            # nothing and moves the aim off him; "fire" holds the aim and shoots the moment it is ready.
+            return "fire" if t["kind"] in HITSCAN else _dodge(f)
         # Within claw reach and reloading: back off facing them instead of standing to wait for the shot
         # (E1M3's blue key trap: three imps clawed the expert 46 -> 16 while it waited out each reload).
         if f["reload"] > RELOAD_DODGE and t["dist"] <= 110 and t["kind"] not in MELEE                 and f["rays"].get("behind", (0.0, ""))[0] > 120 and not (f["blocked"] and f["last"] == "back"):
             return "back"
         if t["crosshair"]:
-            if f["damage"] > 0 and "fire" in (f["last"] or ""):
+            if f["damage"] > 0 and "fire" in (f["last"] or "") and t["kind"] not in HITSCAN:
                 return _open_side(f, "fire_strafe_")       # getting hit while shooting: dodge and keep firing
             if t["kind"] in MELEE and t["dist"] < 110:
                 return _open_side(f, "fire_strafe_")       # demon about to bite (E1M6): sidestep while firing
@@ -310,8 +347,13 @@ def _decide(f: dict) -> str:
     low_shells = f["weapon"] == "shotgun" and f["shells"] < 8      # Barons take ~15 shotgun blasts each
     # Health before ammo when low (E1M3: at 3 health the expert walked past a medikit 108 units away
     # to fetch shells). Below 60 a near medikit is worth the steps: carried health decides the next level.
-    health = [p for p in f["pickups"] if p["name"] in HEALTH_ITEMS and p["angle"] is not None
-              and p["dist"] < (600 if f["health"] < 40 else 300) and f["health"] < 60 and not _cut_off(f, p)]
+    # A near item that would not be wasted is worth the steps too (E1M4: a medikit beside the start, taken
+    # at 71 health it is 25 more for the zombieman room behind the first door).
+    health = [p for p in f["pickups"] if p["name"] in HEALTH_ITEMS and p["angle"] is not None and not _cut_off(f, p)
+              and ((p["dist"] < (600 if f["health"] < 40 else 300) and f["health"] < 60)
+                   or (p["dist"] < 300 and f["health"] + HEALTH_GAIN[p["name"]] <= 100))]
+    health += [p for p in f["pickups"] if p["name"] in ARMOR_ITEMS and p["angle"] is not None and p["dist"] < 600
+               and f["armor"] < 50 and not _cut_off(f, p)]
     ammo = [p for p in f["pickups"] if p["name"] in AMMO_ITEMS and p["angle"] is not None and p["dist"] < 600
             and (not has_ammo or low_shells) and not _cut_off(f, p)]
     items = health if health and (f["health"] < 40 or not ammo) else ammo
