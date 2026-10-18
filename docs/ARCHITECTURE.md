@@ -99,4 +99,27 @@ The same rule-based expert, delayed to 0.7 s per decision (the local Jev speed),
 
 ## Results
 
-Filled in from `runs/compare-*/results.md` after the live comparison.
+Live, real time, E1M1 skill 3, 5 seeds per arm, 300 s limit (`runs/compare-final/results.md`):
+
+| Arm | Exit | Route progress, median (best) | Median decision | Decisions/s | Cost, 5 runs |
+|---|---|---|---|---|---|
+| Rules expert, instant | 5/5 | 100% in 21.7 s | ~0 s | 5.8 | 0 |
+| Rules expert, 0.7 s per decision | 0/5 | 87.9% (89.4%) | 0.70 s | 1.17 | 0 |
+| Jev hosted, Gemma-4-26B | 0/5 | 52.0% (75.6%) | 1.38 s | 0.66 | free demo |
+| Jev hosted, Qwen3.6-35B | 0/5 | 23.6% (23.8%) | 0.68 s | 1.08 | free demo |
+| Claude Haiku 5.5 | 0/5 | 12.7% (12.7%) | 0.96 s | 0.86 | $0.13 |
+| Claude Haiku 5.5, thinking | 0/5 | 12.7% (12.7%) | 1.32 s | 0.58 | $0.13 |
+
+What the table says:
+
+- Rules that clear the level every time stop clearing it when each decision arrives 0.7 s late. In real time, latency costs as much as judgement.
+- Both Haiku arms get stuck at the same corridor corner on every seed. The text says "moved 0 units (blocked)" after each step; Haiku keeps choosing forward and small turns. The expert reads the same line and sidesteps.
+- Hosted Jev with Gemma is the strongest LLM arm despite being the slowest: it fights back and follows doors and the route, and it dies in the nukage room fights.
+
+Single-decision quality does not predict play. On the 60-situation probe (20 commands), Haiku scores highest (0.875, Gemma 0.825, hosted Qwen 0.483), but its weakest category is exactly "blocked" (0.375; 0.125 with thinking), the one situation that ended all ten of its live runs. The rules expert scores only 0.617 on the probe, because it deliberately skips distant fights the probe expects it to take, and it is the only arm that finishes the level.
+
+### The local student
+
+Distilling the rule-based expert into Qwen3.5-0.8B did not work on this hardware in one night. Two runs (hard labels, then soft labels with a higher learning rate) settled on predicting the most frequent command for every situation: held-out agreement stayed at 6.7%, the share of "forward" in the held-out slice. A short sanity run on five clear-cut commands also stayed at chance after 40 steps. Training runs at about 0.35 examples/s on the Radeon 890M, so each experiment costs hours, and the cause is not isolated yet. The earlier student distilled from the hosted Qwen teacher (13 commands) did learn (81 to 85% agreement), so the pipeline itself can learn; the open question is the 20-command expert task.
+
+Next step: the RTX 3090 Ti, where the same training runs an order of magnitude faster (estimate) and a larger student fits.
