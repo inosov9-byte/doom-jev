@@ -97,13 +97,16 @@ class Executor:
 
     @staticmethod
     def _weapon(obs: Obs, a) -> None:
-        # A fixed rule, not a decision: the best weapon with ammo. The rocket launcher only while
+        # A fixed rule, not a decision: the best weapon with ammo. The chaingun for enemies beyond
+        # 200 units (keep it down to 160). The rocket launcher only while
         # every visible enemy is far enough away that the blast cannot reach the player
         # (switch to it at 300+ units, keep it down to 200), never with nothing in view.
         near = min((obs.dist_to(m.x, m.y) for m in obs.monsters if m.visible), default=None)
         safe = near is not None and near >= (200 if obs.weapon == 5 else 300)
         if obs.has_launcher and obs.rockets > 0 and safe:
             want = 5
+        elif obs.has_chaingun and obs.bullets >= 20 and near is not None and near > (160 if obs.weapon == 4 else 200):
+            want = 4      # at range the chaingun out-damages the scattered shotgun and saves shells (E1M8's Barons)
         elif obs.has_shotgun and obs.shells > 0:
             want = 3
         elif obs.has_chaingun and obs.bullets > 0:

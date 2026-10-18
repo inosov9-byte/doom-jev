@@ -43,22 +43,35 @@ class Subgoal:
     color: str = ""
 
 
-def world(m: MapData, keys: frozenset, opened: frozenset) -> MapData:
+def world(m: MapData, keys: frozenset, opened: frozenset, strict_lifts: bool = False) -> MapData:
+    """strict_lifts: a lift moved by a trigger counts as passable only once its tag has fired (detour checks:
+    E1M8 starts on a lift raised by the switch in front of the player)."""
     doors, lifts = set(), set()
     for l in m.lines:
         if l.special in DOOR_SPECIALS and l.back != -1:
             if l.special in KEY_DOORS and KEY_DOORS[l.special] not in keys:
                 continue
             doors.add(l.back)
-        if l.special in LIFT_TRIGGERS and l.tag:
+        manual = l.special in LIFT_TRIGGERS and any(sd >= 0 and m.sector_tag[sd] == l.tag for sd in (l.front, l.back))
+        if l.special in LIFT_TRIGGERS and l.tag and (not strict_lifts or manual or l.tag in opened):
             lifts |= {i for i, t in enumerate(m.sector_tag) if t == l.tag}
     door_tags = {l.tag for l in m.lines if l.special in DOOR_TRIGGERS}
     stair_step = {l.tag: STAIR_SPECIALS[l.special] for l in m.lines if l.special in STAIR_SPECIALS and l.tag}
+    lower_tags = {l.tag for l in m.lines if l.special in LOWER_TO_LOWEST and l.tag}
+    lower_tags |= {b[2] for name, b in BOSS_TRIGGERS.items() if name == m.name}
     floor = m.floor
     for tag in opened:
         secs = {i for i, t in enumerate(m.sector_tag) if t == tag}
         if tag in stair_step:
             floor = _build_stairs(m, secs, stair_step[tag], floor.copy() if floor is m.floor else floor)
+        elif tag in lower_tags:      # floor drops to the lowest neighbouring floor (E1M8's tag 666 wall)
+            floor = floor.copy() if floor is m.floor else floor
+            for s in secs:
+                nb = [l.front if l.back == s else l.back for l in m.lines if s in (l.front, l.back)]
+                nb = [n for n in nb if n not in (-1, s)]
+                if nb:
+                    floor[s] = min(m.floor[n] for n in nb)
+            lifts |= secs
         elif tag in door_tags:
             doors |= secs
         else:
@@ -67,6 +80,7 @@ def world(m: MapData, keys: frozenset, opened: frozenset) -> MapData:
 
 
 STAIR_SPECIALS = {7: 8, 8: 8, 100: 16, 127: 16}   # stair builders -> step height (100, 127: turbo 16)
+LOWER_TO_LOWEST = {23, 37, 38, 60, 82, 84}         # floor lowers to the lowest neighbouring floor
 
 
 def _build_stairs(m: MapData, start: set[int], step: float, floor: np.ndarray) -> np.ndarray:
@@ -98,9 +112,30 @@ def _stand_points(line, dist=40.0):
     return [(mx + nx * dist, my + ny * dist), (mx - nx * dist, my - ny * dist)], (mx, my)
 
 
+BOSS_TRIGGERS = {"E1M8": (3003, "baron of hell", 666)}   # map -> (boss thing type, label, tag opened when all die)
+
+
+def _boss_spots(m: MapData, g: NavGrid, pos) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """A reachable spot near a boss (the boss itself if its cell is reachable), and the boss position."""
+    boss = BOSS_TRIGGERS.get(m.name)
+    if not boss:
+        return None
+    for t in m.things:
+        if t[3] != boss[0] or (len(t) > 4 and (not t[4] & SKILL_FLAG[3] or t[4] & 16)):
+            continue
+        bp = (float(t[0]), float(t[1]))
+        for r in (0, 128, 256):
+            for k in range(8 if r else 1):
+                p = (bp[0] + r * math.cos(k * math.pi / 4), bp[1] + r * math.sin(k * math.pi / 4))
+                if g.sector_at(*p) >= 0 and g.plan(pos, p):
+                    return p, bp
+    return None
+
+
 def solve(m: MapData, start: tuple[float, float], max_depth: int = 5, verbose: bool = False) -> list[Subgoal] | None:
     stand, mid, _ = exit_target(m)
-    exit_goal = Subgoal("exit", "exit", stand, mid)
+    exit_goal = Subgoal("exit", "exit" if m.exit_lines else "teleporter", stand, mid)
+    boss = BOSS_TRIGGERS.get(m.name)
     keys_avail = [(KEY_THINGS[t[3]], (float(t[0]), float(t[1]))) for t in m.things if t[3] in KEY_THINGS]
     triggers = {}
     for l in m.lines:
@@ -127,6 +162,11 @@ def solve(m: MapData, start: tuple[float, float], max_depth: int = 5, verbose: b
         if len(steps) >= max_depth:
             continue
         area = int(g.reachable(pos).sum())
+        if boss and boss[2] not in opened:           # kill the bosses: their deaths open the boss tag
+            spot = _boss_spots(m, g, pos)
+            if spot and int(grid(keys, opened | {boss[2]}).reachable(spot[0]).sum()) > area:
+                q.append((keys, opened | {boss[2]}, spot[0],
+                          steps + [Subgoal("kill", boss[1], spot[0], spot[1], tag=boss[2])]))
         for color, kpos in keys_avail:
             if color not in keys and g.plan(pos, kpos):
                 q.append((keys | {color}, opened, kpos,
@@ -174,17 +214,18 @@ MAX_DETOUR = 1000.0                  # extra route units; E1M2 shotgun +961, ~2 
 
 
 def with_weapon_detours(m: MapData, goals: list[Subgoal], start: tuple[float, float],
-                        max_detour: float = MAX_DETOUR) -> list[Subgoal]:
+                        max_detour: float = MAX_DETOUR, held: set[str] = frozenset()) -> list[Subgoal]:
     """Insert an 'item' subgoal for each detour weapon whose cheapest detour from a stage's route
-    is within max_detour. The stage is done once the weapon is held (perception.py)."""
+    is within max_detour. The stage is done once the weapon is held (perception.py). Weapons already
+    held (carried from the previous level) and second copies get no detour."""
     from .wadmap import path_length
     goals = list(goals)
     for t in m.things:
         name = DETOUR_WEAPONS.get(t[3])
-        if not name or (len(t) > 4 and (not t[4] & SKILL_FLAG[3] or t[4] & 16)):
+        if not name or name in held or (len(t) > 4 and (not t[4] & SKILL_FLAG[3] or t[4] & 16)):
             continue          # absent at skill 3 or multiplayer only (E1M3: the expert circled a missing shotgun)
         pos = (float(t[0]), float(t[1]))
-        grids, here, best = stage_grids(m, goals), start, None
+        grids, here, best = stage_grids(m, goals, strict_lifts=True), start, None
         for i, (g, gr) in enumerate(zip(goals, grids)):
             base, a, b = gr.plan(here, g.pos), gr.plan(here, pos), gr.plan(pos, g.pos)
             if base and a and b:
@@ -194,14 +235,15 @@ def with_weapon_detours(m: MapData, goals: list[Subgoal], start: tuple[float, fl
             here = g.pos
         if best is not None:
             goals.insert(best[0], Subgoal("item", name, pos, pos))
+            held = set(held) | {name}
     return goals
 
 
-def stage_grids(m: MapData, goals: list[Subgoal]) -> list[NavGrid]:
+def stage_grids(m: MapData, goals: list[Subgoal], strict_lifts: bool = False) -> list[NavGrid]:
     """Planner grid for each stage: the world as it is before that subgoal."""
     grids, keys, opened = [], frozenset(), frozenset()
     for g in goals:
-        grids.append(NavGrid(world(m, keys, opened)))
+        grids.append(NavGrid(world(m, keys, opened, strict_lifts)))
         if g.kind == "key":
             keys = keys | {g.color}
         elif g.kind in ("switch", "walk", "shoot"):

@@ -17,10 +17,12 @@ import json
 import os
 import statistics
 import urllib.request
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from .engines import ARMS, load_credentials, make_engine
 from .jev import LOCAL_URL
+from .loadout import load as load_loadout
 from .play import git_commit, run
 from .probe import make_cases, score_decide
 
@@ -101,6 +103,8 @@ def main(argv=None):
     ap.add_argument("--no-video", action="store_true")
     ap.add_argument("--window", action="store_true")
     ap.add_argument("--runs", default="runs")
+    ap.add_argument("--loadout", help="carried state: pistol (default), nominal, or a loadout/summary.json file")
+    ap.add_argument("--jobs", type=int, default=1, help="parallel runs (rules arms only: CPU-bound, no shared GPU server)")
     ap.add_argument("--out", help="write into this folder (add arms to an existing comparison)")
     args = ap.parse_args(argv)
 
@@ -136,15 +140,26 @@ def main(argv=None):
     prev = out_dir / "results.json"
     if prev.exists():                                   # adding arms to an existing comparison
         results = [r for r in json.loads(prev.read_text()).get("runs", []) if r["arm"] not in args.arms]
-    for seed in args.seeds:
-        for arm in args.arms:
-            print(f"--- seed {seed} arm {arm}", flush=True)
-            s = run(arm, seed, map_name=args.map, local_url=args.local_url, timeout=args.timeout, window=args.window,
-                    record_video=not args.no_video, runs_dir=str(out_dir), dry_run=args.dry_run)
-            results.append(s)
-            print(f"    {s['outcome']:8s} progress {s['route_progress_pct']:5.1f}%  {s['game_seconds']:5.1f}s  "
-                  f"kills {s['kills']}  latency {s['latency_median']}s  cost ${s['cost_usd']}", flush=True)
-            (out_dir / "results.json").write_text(json.dumps({"meta": meta, "runs": results}, indent=2))
+    jobs = [(seed, arm) for seed in args.seeds for arm in args.arms]
+    kw = dict(map_name=args.map, local_url=args.local_url, timeout=args.timeout, window=args.window,
+              record_video=not args.no_video, runs_dir=str(out_dir), dry_run=args.dry_run,
+              loadout=load_loadout(args.loadout, args.map))
+
+    def done(seed, arm, s):
+        results.append(s)
+        print(f"--- seed {seed} arm {arm}: {s['outcome']:8s} progress {s['route_progress_pct']:5.1f}%  "
+              f"{s['game_seconds']:5.1f}s  kills {s['kills']}  latency {s['latency_median']}s  cost ${s['cost_usd']}", flush=True)
+        (out_dir / "results.json").write_text(json.dumps({"meta": meta, "runs": results}, indent=2))
+
+    parallel = [j for j in jobs if args.jobs > 1 and j[1].startswith("rules")]
+    if parallel:
+        with ProcessPoolExecutor(max_workers=args.jobs) as pool:
+            futs = {pool.submit(run, arm, seed, quiet=True, **kw): (seed, arm) for seed, arm in parallel}
+            for f in as_completed(futs):
+                done(*futs[f], f.result())
+    for seed, arm in jobs:
+        if (seed, arm) not in parallel:      # model arms share one GPU server: one at a time
+            done(seed, arm, run(arm, seed, **kw))
     all_arms = list(dict.fromkeys([r["arm"] for r in results]))
     agg = aggregate(results, all_arms)
     meta["arms"] = all_arms

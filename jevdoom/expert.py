@@ -20,6 +20,11 @@ FIST = 90
 AMMO_ITEMS = ("ammo clip", "box of bullets", "shells", "box of shells", "shotgun")
 HEALTH_ITEMS = ("stimpack", "medikit", "health bonus")
 MELEE = ("demon", "spectre")   # bite only: keep them from reaching the player
+MELEE_ENGAGE = 450             # demons are fought from this far: they come to the player anyway
+BOSSES = ("baron",)            # fought at any range when in view
+COVER_HEALTH = 70             # below this, a hit from a boss sends the expert behind cover
+BARREL_BLAST = 160             # barrel explosion radius is 128; never shoot one closer than this
+KILL_GOALS = ("baron of hell",)
 
 
 def _angle(text: str) -> float | None:
@@ -63,6 +68,8 @@ def parse_state(s: str) -> dict:
             r = re.match(r"\s*(ahead|behind|\d+ left|\d+ right) (open|(\d+) (.+))", part)
             if r:
                 f["rays"][r.group(1)] = (1500.0, "open") if r.group(2) == "open" else (float(r.group(3)), r.group(4))
+    m = re.search(r"Cover from [a-z ]+: (\d+) units, ([^.]+)\.", s)
+    f["cover"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     f["goal"] = "exit"
     m = re.search(r"Route to ([a-z ]+): ([a-z ]+?) (\d+) away, ([^.]+)\.", s)
     if m:
@@ -126,7 +133,7 @@ def decide(state: str) -> str:
         return "use"
     if goal == "switch" and ahead[1] == "switch" and ahead[0] <= USE_REACH:
         return "use"
-    if f["exit_near"] is not None:
+    if f["exit_near"] is not None and goal not in KILL_GOALS:     # a kill target is fought, not walked onto
         d, a = f["exit_near"]
         if a is not None and abs(a) >= (2.5 if goal == "switch to shoot" else 7.5):
             return turn_toward(a)
@@ -143,9 +150,42 @@ def decide(state: str) -> str:
     crowd = sum(1 for e in f["enemies"] if e["dist"] <= 300) >= 2
     sprint = (f["route_left"] is not None and f["route_left"] < 700 and not crowd) or f["health"] < 30
     reach = (100 if sprint else ENGAGE) if has_ammo else FIST
-    threats = [e for e in f["enemies"] if e["dist"] <= reach and e["angle"] is not None]
+    # Demons close the gap fast and only bite: shoot them on the way in rather than walking into them
+    # (E1M8's opening: the expert walked into the barrel field to meet the pack).
+    melee_reach = MELEE_ENGAGE if has_ammo and not sprint else 0
+    threats = [e for e in f["enemies"] if e["angle"] is not None
+               and (e["dist"] <= reach or (e["kind"] in BOSSES and has_ammo)
+                    or (e["kind"] in MELEE and e["dist"] <= melee_reach))]
     if threats:
         t = min(threats, key=lambda e: e["dist"])
+        # A barrel in the firing cone inside its blast radius takes the shot, shotgun spread included
+        # (E1M8: one blast, 100 -> 10 health; a pellet clipped a barrel 41 units off, 100 -> 35).
+        cone = min((d for k, (d, kind) in f["rays"].items() if k in ("ahead", "30 left", "30 right")
+                    and kind.startswith("barrel")), default=1500.0)
+        if cone < BARREL_BLAST:
+            return "back" if f["rays"].get("behind", (0.0, ""))[0] > 120 else _open_side(f, "strafe_")
+        # A barrel beside enemies, outside its blast: shoot the barrel (E1M8's opening: demon packs, pistol only).
+        # Not with a second barrel near the player: blasts chain (E1M8 seed 3: 100 -> 35 in one shot).
+        near_barrel = min((d for k, (d, kind) in f["rays"].items() if k != "ahead" and kind.startswith("barrel")),
+                          default=1500.0)
+        if ahead[1].startswith("barrel") and BARREL_BLAST <= ahead[0] <= 450 and near_barrel >= 200 and has_ammo and any(
+                e["angle"] is not None and abs(e["angle"]) <= 12 and abs(e["dist"] - ahead[0]) < 110 for e in f["enemies"]):
+            return "fire"
+        # Hurt in a boss fight: break line of sight behind the reported cover, then peek again
+        # (the compass leads back toward the boss once it is out of view).
+        if (t["kind"] in BOSSES and f["cover"] is not None
+                and ((f["damage"] > 0 and f["health"] < COVER_HEALTH) or f["health"] < 40)):
+            d, a = f["cover"]
+            if a is not None and abs(a) >= 30:
+                return turn_toward(a)
+            return "forward" if d > 120 else "forward_short"
+        if t["kind"] in BOSSES and t["crosshair"]:
+            # Baron (E1M8): claws up close, slow fireballs at range. Keep out of reach and keep moving.
+            if t["dist"] < 130:
+                return "back"
+            if t["dist"] <= 500:
+                return _open_side(f, "fire_strafe_")
+            return "forward_short"                         # shotgun spread: close in before shooting
         if t["crosshair"]:
             if f["damage"] > 0 and "fire" in (f["last"] or ""):
                 return _open_side(f, "fire_strafe_")       # getting hit while shooting: dodge and keep firing
@@ -153,7 +193,7 @@ def decide(state: str) -> str:
                 return _open_side(f, "fire_strafe_")       # demon about to bite (E1M6): sidestep while firing
             return "fire"
         turn = turn_toward(t["angle"])
-        if turn.endswith(("_5", "_15", "_30")):
+        if turn.endswith(("_5", "_15", "_30")) and not (t["kind"] in BOSSES and t["dist"] > 500):
             return turn + "_fire"                          # small aim correction: aim and shoot in one decision
         return turn
 
@@ -162,7 +202,8 @@ def decide(state: str) -> str:
         return turn_toward(f["attacker"])
 
     # 4. supplies: ammo when out, health when low
-    want = AMMO_ITEMS if not has_ammo else HEALTH_ITEMS if f["health"] < 40 else ()
+    low_shells = f["weapon"] == "shotgun" and f["shells"] < 8      # Barons take ~15 shotgun blasts each
+    want = AMMO_ITEMS if (not has_ammo or low_shells) else HEALTH_ITEMS if f["health"] < 40 else ()
     items = [p for p in f["pickups"] if p["name"] in want and p["dist"] < 600 and p["angle"] is not None]
     if items:
         p = min(items, key=lambda p: p["dist"])
@@ -182,9 +223,12 @@ def decide(state: str) -> str:
     if route is not None and abs(route) >= 7.5:
         return turn_toward(route)
 
-    # 7. a lift: the route goes up a ledge too high to climb right in front: press use to lower it
+    # 7. a lift: the route goes up a ledge too high to climb right in front: press use to lower it.
+    #    A lift wall (manual lift line, E1M8 before the Barons) is used once, then walked onto as it lowers.
     if ahead[1].startswith("ledge too high") and ahead[0] <= USE_REACH and f["blocked"]:
         return "use"
+    if ahead[1].startswith("lift") and ahead[0] <= USE_REACH:
+        return "forward_short" if f["last"] == "use" else "use"
 
     # 8. unstick: sidestep toward the open side; if the sidestep was blocked too, back off
     if f["blocked"]:

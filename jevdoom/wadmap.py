@@ -102,6 +102,11 @@ def _seg_dist(px, py, ax, ay, bx, by):
     return np.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 
+# Height-independent parts of a NavGrid, per map geometry (the lines list, shared by every world
+# variant of a map): rebuilding a grid for live heights took 3.2 s on E1M8 and froze the player.
+_GEOMETRY: dict[int, dict] = {}
+
+
 class NavGrid:
     def __init__(self, m: MapData):
         self.m = m
@@ -113,7 +118,10 @@ class NavGrid:
         gx = self.x0 + (np.arange(self.w) + 0.5) * CELL
         gy = self.y0 + (np.arange(self.h) + 0.5) * CELL
         self.cx, self.cy = np.meshgrid(gx, gy)            # shape (h, w)
-        self.sector = self._locate_sectors()
+        geo = _GEOMETRY.get(id(m.lines))
+        if geo is None or geo["lines"] is not m.lines:
+            geo = _GEOMETRY[id(m.lines)] = self._geometry()
+        self.sector = geo["sector"]
         floor, ceil = m.floor.copy(), m.ceil.copy()
         for s in m.door_sectors:                            # doors open to lowest neighbour ceiling - 4
             neigh = [l.front if l.back == s else l.back for l in m.lines if s in (l.front, l.back)]
@@ -132,19 +140,34 @@ class NavGrid:
                 self.blocked |= np.hypot(self.cx - t[0], self.cy - t[1]) < r + PLAYER_RADIUS
         self.cost = np.ones((self.h, self.w))
         self.cost[inside & np.isin(m.special[sec], list(DAMAGE_SECTORS))] = 25.0
-        for l in m.lines:
+        self.blocked |= geo["solid_block"]
+        self.cost += geo["solid_cost"]                      # prefer the middle of corridors
+        flat = self.cost.reshape(-1)
+        for l, (idx, val) in zip(m.lines, geo["near"]):
+            if idx is None:
+                continue
+            ff, bf = floor[l.front], floor[l.back]
+            gap = min(ceil[l.front], ceil[l.back]) - max(ff, bf)
+            if abs(ff - bf) > MAX_STEP or gap < PLAYER_HEIGHT:
+                np.add.at(flat, idx, val)                   # keep off ledges
+        self.blocked_edges = self._ledge_crossings()
+
+    def _geometry(self) -> dict:
+        solid_block = np.zeros(self.cx.shape, bool)
+        solid_cost = np.zeros(self.cx.shape)
+        near = []
+        for l in self.m.lines:
             (ax, ay), (bx, by) = l.v1, l.v2
             d = _seg_dist(self.cx, self.cy, ax, ay, bx, by)
-            solid = l.back == -1 or (l.flags & 1)
-            if solid:
-                self.blocked |= d < PLAYER_RADIUS
-                self.cost += np.where(d < 40, (40 - d) / 8, 0)   # prefer the middle of corridors
+            if l.back == -1 or (l.flags & 1):
+                solid_block |= d < PLAYER_RADIUS
+                solid_cost += np.where(d < 40, (40 - d) / 8, 0)
+                near.append((None, None))
             else:
-                ff, bf = floor[l.front], floor[l.back]
-                gap = min(ceil[l.front], ceil[l.back]) - max(ff, bf)
-                if abs(ff - bf) > MAX_STEP or gap < PLAYER_HEIGHT:
-                    self.cost += np.where(d < 32, (32 - d) / 4, 0)  # keep off ledges
-        self.blocked_edges = self._ledge_crossings()
+                idx = np.flatnonzero(d.reshape(-1) < 32)
+                near.append((idx, (32 - d.reshape(-1)[idx]) / 4))
+        return {"lines": self.m.lines, "sector": self._locate_sectors(),
+                "solid_block": solid_block, "solid_cost": solid_cost, "near": near}
 
     # -- geometry ---------------------------------------------------------
     def _locate_sectors(self) -> np.ndarray:
@@ -332,9 +355,30 @@ def path_length(path) -> float:
     return sum(math.dist(path[i], path[i + 1]) for i in range(len(path) - 1)) if path else 0.0
 
 
+TELEPORT_SPECIALS = {39, 97, 125, 126}
+END_LEVEL_SECTOR = 11          # damage floor that ends the level when health drops below 11% (E1M8)
+
+
+def teleport_exit(m: MapData) -> tuple[float, float] | None:
+    """For maps without an exit line (E1M8): the middle of the teleport lines whose destination sector
+    ends the level. Walking into it from outside crosses a teleport line."""
+    end_tags = {int(m.sector_tag[i]) for i, sp in enumerate(m.special) if sp == END_LEVEL_SECTOR and m.sector_tag[i]}
+    lines = [l for l in m.lines if l.special in TELEPORT_SPECIALS and l.tag in end_tags]
+    if not lines:
+        return None
+    pts = [p for l in lines for p in (l.v1, l.v2)]
+    return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+
+
 def exit_target(m: MapData) -> tuple[tuple[float, float], tuple[float, float], float]:
-    """Stand point in front of the first exit switch, the switch midpoint, and the facing angle."""
+    """Stand point in front of the first exit switch, the switch midpoint, and the facing angle.
+    Without an exit line, the end-level teleporter's middle (stand and target are the same point)."""
     normal = [l for l in m.exit_lines if l.special in NORMAL_EXITS]
+    if not (normal or m.exit_lines):
+        tp = teleport_exit(m)
+        if tp is None:
+            raise ValueError(f"{m.name}: no exit line and no end-level teleporter")
+        return tp, tp, 0.0
     l = (normal or m.exit_lines)[0]
     (x1, y1), (x2, y2) = l.v1, l.v2
     mx, my = (x1 + x2) / 2, (y1 + y2) / 2

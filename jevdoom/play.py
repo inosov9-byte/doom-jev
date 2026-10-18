@@ -29,6 +29,7 @@ from .engines import ARMS, Engine, make_engine
 from .env import blank_action, make_game, observe
 from .executor import Executor
 from .jev import LOCAL_URL
+from .loadout import apply as apply_loadout, from_obs, load as load_loadout
 from .perception import Perception
 from .progression import Subgoal, load_or_solve, stage_grids, with_weapon_detours
 from .wadmap import NavGrid, exit_target, load_map, path_length
@@ -75,12 +76,17 @@ class Brain(threading.Thread):
                 obs = self.latest                   # freshest state right before the call
             last_start = time.monotonic()
             t0 = time.perf_counter()
-            state = self.perc.describe(obs, last_cmd=self.last_cmd)
+            try:                                    # a perception bug must not kill the thread (the player froze)
+                state = self.perc.describe(obs, last_cmd=self.last_cmd)
+            except Exception:
+                state = None
+                dec, err = None, "perception: " + traceback.format_exc()[-600:]
             t_perc = time.perf_counter() - t0
-            try:
-                dec, err = self.engine.decide(state), None
-            except Exception as e:
-                dec, err = None, f"{type(e).__name__}: {str(e)[:200]}"
+            if state is not None:
+                try:
+                    dec, err = self.engine.decide(state), None
+                except Exception as e:
+                    dec, err = None, f"{type(e).__name__}: {str(e)[:200]}"
             if dec is not None:
                 self.issued += 1                    # bump first: the game loop compares against it before clear
                 self.applied.clear()
@@ -144,9 +150,11 @@ def git_commit() -> str:
 def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\doom1.wad", map_name: str = "E1M1",
         skill: int = 3, local_url: str = LOCAL_URL, timeout: int = 300, window: bool = False,
         record_video: bool = False, runs_dir: str = "runs", compass: bool = True, dry_run: bool = False,
-        engine: Engine | None = None, stepped: bool = False, quiet: bool = False, stuck_s: float = 45.0) -> dict:
+        engine: Engine | None = None, stepped: bool = False, quiet: bool = False, stuck_s: float = 45.0,
+        loadout: dict | None = None) -> dict:
     """stepped=True: the game waits for every decision (no real time, no worker thread). For
-    developing the rules expert and recording expert trajectories; not used for the comparison."""
+    developing the rules expert and recording expert trajectories; not used for the comparison.
+    loadout: the state carried in from the previous level (loadout.py); None = pistol start."""
     engine = engine or make_engine(arm, local_url=local_url, dry_run=dry_run, seed=seed or 0)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = Path(runs_dir) / (f"{stamp}-{arm}" + (f"-s{seed}" if seed is not None else ""))
@@ -154,7 +162,8 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     m = load_map(wad, map_name)
     start = next((float(t[0]), float(t[1])) for t in m.things if t[3] == 1)
     try:
-        goals = with_weapon_detours(m, load_or_solve(m, start), start)
+        held = set(loadout["weapons"]) if loadout else set()
+        goals = with_weapon_detours(m, load_or_solve(m, start), start, held=held)
     except RuntimeError:          # planner found no progression (E1M3/E1M4/E1M7): exit only, compass if any route
         st, mid, _ = exit_target(m)
         goals = [Subgoal("exit", "exit", st, mid)]
@@ -168,8 +177,10 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
         here = gl.pos
     total_route = sum(stage_len)
 
-    g = make_game(wad, map_name, skill, visible=window, timeout_s=timeout, seed=seed)
+    g = make_game(wad, map_name, skill, visible=window, timeout_s=timeout, seed=seed, cheats=loadout is not None)
     g.new_episode()
+    if loadout:
+        apply_loadout(g, loadout)
     for _ in range(10):                      # ViZDoom ignores input for the first 7 tics
         g.make_action(blank_action())
     exe = Executor()
@@ -286,6 +297,7 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                    "game_seconds": round(tic / TICRATE, 1), "wall_seconds": round(wall, 1),
                    "kills": obs.kills if obs else 0, "damage_taken": round(obs.damage_taken) if obs else 0,
                    "health_end": round(obs.health) if obs else None,
+                   "start_loadout": loadout, "end_loadout": from_obs(obs) if obs else None,
                    "decisions": n_dec, "errors": n_err, "decisions_per_s": round(n_dec / max(wall, 1e-9), 2),
                    "latency_median": round(statistics.median(lat), 3) if lat else None,
                    "latency_p90": round(lat_sorted[int(0.9 * (len(lat_sorted) - 1))], 3) if lat else None,
@@ -314,10 +326,12 @@ def main(argv=None):
     ap.add_argument("--no-compass", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="mock engine with the arm's latency profile; free")
     ap.add_argument("--stepped", action="store_true", help="game waits for each decision (expert development)")
+    ap.add_argument("--loadout", help="carried state: pistol (default), nominal, or a loadout/summary.json file")
     args = ap.parse_args(argv)
     s = run(args.arm, args.seed, wad=args.wad, map_name=args.map, skill=args.skill, local_url=args.local_url,
             timeout=args.timeout, window=args.window, record_video=args.record_video, runs_dir=args.runs,
-            compass=not args.no_compass, dry_run=args.dry_run, stepped=args.stepped)
+            compass=not args.no_compass, dry_run=args.dry_run, stepped=args.stepped,
+            loadout=load_loadout(args.loadout, args.map))
     print(json.dumps(s, indent=2))
 
 

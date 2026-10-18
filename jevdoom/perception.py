@@ -49,6 +49,7 @@ class Perception:
         self.switch_kind = {i: ("switch" if l.special in S else "switch to shoot")
                             for i, l in enumerate(L) if l.special in S | G}
         self.locked = {i: KEY_DOORS[l.special] for i, l in enumerate(L) if l.special in KEY_DOORS}
+        self.lift_walls = {i for i, l in enumerate(L) if LIFT_TRIGGERS.get(l.special) == "S" and l.back != -1}
         self.route: list | None = None
         self.idx = 0
         self.prev: Obs | None = None
@@ -58,6 +59,7 @@ class Perception:
         self.live_grids: dict[int, NavGrid] = {}     # stage -> grid rebuilt from live sector heights
         self.at_goal = False                          # close to the goal with a clear walk to it
         self.live_check_tic = -10**9
+        self.plan_fail_tic = -10**9
 
     # -- raycasting -----------------------------------------------------------
     def body_ray(self, obs: Obs, rel_deg: float) -> tuple[float, str, float | None]:
@@ -132,12 +134,70 @@ class Perception:
                         eta = max(0.0, (self.grid.ceil_s[door] - now) / 2 / 35)
                         state = f"opening, fully open in about {max(0.5, round(eta * 2) / 2):g} s"
                     return d, f"door ({state})", nukage, thing
+                if i in self.lift_walls:              # the raised lift itself (E1M8: special 62 before the Barons)
+                    return d, "lift (raised)", nukage, thing
                 return d, "wall", nukage, thing
             if nf - cf > MAX_STEP:
                 return d, "ledge too high to climb", nukage, thing
             if nukage is None and self.m.special[nxt] in DAMAGE_SECTORS:
                 nukage = d
         return float(MAX_RAY), "open", nukage, thing
+
+    # -- cover ------------------------------------------------------------------
+    COVER_FROM = ("BaronOfHell",)            # monsters a cover spot is reported for
+    EYE, CHEST = 41.0, 32.0                  # Doom player eye height; a monster's mid height
+
+    def _live_heights(self, obs: Obs):
+        f, c = self.m.floor.copy(), self.m.ceil.copy()
+        for i, (fl, ce) in obs.heights.items():
+            if i < len(f):
+                f[i], c[i] = fl, ce
+        return f, c
+
+    def _sight_clear(self, a, az, b, bz, floor, ceil) -> bool:
+        """Line of sight from (a, az) to (b, bz) through map lines with live heights: one-sided
+        lines block, two-sided lines block when the sight line passes outside their opening."""
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        ex, ey = self.bx - self.ax, self.by - self.ay
+        den = dx * ey - dy * ex
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = ((self.ax - a[0]) * ey - (self.ay - a[1]) * ex) / den
+            u = ((self.ax - a[0]) * dy - (self.ay - a[1]) * dx) / den
+        hit = (np.abs(den) > 1e-9) & (t > 0) & (t < 1) & (u >= 0) & (u <= 1)
+        if (hit & self.solid).any():
+            return False
+        idx = np.flatnonzero(hit)
+        if not len(idx):
+            return True
+        fr, bk = self.front[idx], self.back[idx]
+        lo = np.maximum(floor[fr], floor[bk])
+        hi = np.minimum(ceil[fr], ceil[bk])
+        z = az + (bz - az) * t[idx]
+        return bool(((z >= lo) & (z <= hi)).all())
+
+    def cover(self, obs: Obs, threat) -> tuple[float, float] | None:
+        """Nearest spot (distance, bearing) the player can walk to straight that the threat cannot see:
+        behind a pillar, a wall corner or below a ledge (E1M8's Barons)."""
+        grid = self._stage_grid(obs)
+        floor, ceil = self._live_heights(obs)
+        tsec = grid.sector_at(threat.x, threat.y)
+        tz = (floor[tsec] if tsec >= 0 else 0.0)
+        best = None
+        for d in range(48, 257, 32):
+            for k in range(12):
+                th = math.radians(obs.angle + 30 * k)
+                p = (obs.x + d * math.cos(th), obs.y + d * math.sin(th))
+                sec = grid.sector_at(*p)
+                if sec < 0 or not grid.walkable_line((obs.x, obs.y), p):
+                    continue
+                pz = floor[sec] + self.EYE
+                if any(self._sight_clear(p, pz, (threat.x, threat.y), tz + h, floor, ceil) for h in (self.CHEST, 60.0)):
+                    continue
+                best = (float(d), obs.bearing_to(*p))
+                break
+            if best:
+                return best
+        return None
 
     # -- route compass ----------------------------------------------------------
     def keys_held(self, obs: Obs) -> set[str]:
@@ -155,9 +215,11 @@ class Perception:
                 done = g.color in self.keys_held(obs)
             elif g.kind == "item":
                 done = {"shotgun": obs.has_shotgun, "chaingun": obs.has_chaingun}.get(g.label, True)
+            elif g.kind == "kill":
+                done = not self._targets(obs)
             else:
                 done = any(abs(obs.heights.get(i, (f, c))[0] - f) > 4 or abs(obs.heights.get(i, (f, c))[1] - c) > 4
-                           for i, (f, c, t) in enumerate(zip(self.m.floor, self.m.ceil, self.m.sector_tag))
+                           for i, (f, c, t) in enumerate(zip(self.stage_grids[0].m.floor, self.stage_grids[0].m.ceil, self.m.sector_tag))
                            if t == g.tag)
             if not done:
                 return
@@ -176,9 +238,9 @@ class Perception:
         target, left = t
         g = self.goal
         if self.at_goal:   # at the end of the route with a clear walk: point at the goal itself
-            d = obs.dist_to(*g.target)
-            name = "exit switch" if g.kind == "exit" else g.label
-            return f"{name} {d:.0f} away, {_side(obs.bearing_to(*g.target))}"
+            d = obs.dist_to(*target)            # target is the goal (live position for a kill subgoal)
+            name = "exit switch" if g.kind == "exit" and g.label == "exit" else g.label
+            return f"{name} {d:.0f} away, {_side(obs.bearing_to(*target))}"
         return f"{_side(obs.bearing_to(*target))}, {left:.0f} units left"
 
     LIVE_CHECK_TICS = 35      # compare live sector heights with the route grid at most once a second
@@ -209,18 +271,42 @@ class Perception:
         self.route, self.idx = None, 0
         return self.live_grids[stage]
 
+    KILL_TARGETS = {"baron of hell": "BaronOfHell"}
+
+    def _targets(self, obs: Obs) -> list:
+        """Living monsters a kill subgoal asks for (live positions)."""
+        name = self.KILL_TARGETS.get(self.goal.label)
+        return [mo for mo in obs.monsters if mo.name == name] if name else []
+
+    def _goal_pos(self, obs: Obs) -> tuple[float, float]:
+        """Where the compass aims at the end of the route: the goal's target, or for a kill subgoal the
+        nearest living target. The route itself always runs to the goal's stand point: E1M8's Barons
+        stand in alcoves the grid cannot enter, and planning to them failed on every decision."""
+        if self.goal.kind == "kill":
+            t = self._targets(obs)
+            if t:
+                mo = min(t, key=lambda mo: obs.dist_to(mo.x, mo.y))
+                return (mo.x, mo.y)
+        return self.goal.target
+
+    REPLAN_TICS = 35          # after a failed plan, try again at most once a second
+
     def _route_target(self, obs: Obs):
         pos = (obs.x, obs.y)
         grid = self._stage_grid(obs)
+        gpos = self.goal.pos
         if self.route:
             lo, hi = self.idx, min(len(self.route), self.idx + 60)
             best = min(range(lo, hi), key=lambda i: math.dist(pos, self.route[i]))
             self.idx = best
             off = math.dist(pos, self.route[best])
         if not self.route or off > 96:
-            self.route = grid.plan(pos, self.goal.pos)
+            if not self.route and obs.tic - self.plan_fail_tic < self.REPLAN_TICS:
+                return None
+            self.route = grid.plan(pos, gpos)
             self.idx = 0
             if not self.route:
+                self.plan_fail_tic = obs.tic
                 return None
         path = self.route
         target = path[min(self.idx + 1, len(path) - 1)]
@@ -231,9 +317,9 @@ class Perception:
         left = math.dist(pos, path[self.idx]) + path_length(path[self.idx:])
         # Point at the goal itself only with a clear walk to its standing spot (E1M2 exit: within 120
         # units the direct line to the switch ran into a wall corner and the expert pushed into it).
-        self.at_goal = left < 120 and grid.walkable_line(pos, self.goal.pos)
+        self.at_goal = left < 120 and grid.walkable_line(pos, gpos)
         if self.at_goal:
-            target = self.goal.target
+            target = self._goal_pos(obs)
         return target, left
 
     # -- text -----------------------------------------------------------------
@@ -265,10 +351,16 @@ class Perception:
             parts.append("Pickups in view: " + "; ".join(
                 f"{PICKUP_NAMES[p.name]} {obs.dist_to(p.x, p.y):.0f} away, {_side(obs.bearing_to(p.x, p.y))}" for p in items) + ".")
 
+        bosses = [mo for mo in vis if mo.name in self.COVER_FROM]
+        if bosses:
+            cv = self.cover(obs, bosses[0])
+            name = MONSTER_NAMES.get(bosses[0].name, "boss")
+            parts.append(f"Cover from {name}: {cv[0]:.0f} units, {_side(cv[1])}." if cv else f"Cover from {name}: none near.")
+
         rays, hazard = [], None
         for name, rel in RAYS:
             d, kind, nuk = self.body_ray(obs, rel)
-            if kind in ("door (closed)", "exit switch") and d <= USE_RANGE:
+            if kind in ("door (closed)", "exit switch", "lift (raised)") and d <= USE_RANGE:
                 kind += ", within use reach"
             rays.append(f"{name} {d:.0f} {kind}" if kind != "open" else f"{name} open")
             if nuk is not None and rel in (0, 30, -30) and (hazard is None or nuk < hazard[0]):
@@ -315,7 +407,7 @@ class Perception:
         self.door_ceil_prev = {}
         self.history = []
         self.stage = 0
-        self.live_grids, self.live_check_tic = {}, -10**9
+        self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
 
 
 def _side(b: float, ahead: float = 7.5) -> str:
