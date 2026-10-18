@@ -12,7 +12,7 @@ import argparse
 import json
 from pathlib import Path
 
-ARM_LABEL = {"jev-local": "Jev local (Qwen 0.8B, laptop GPU)", "jev-hosted": "Jev hosted (Qwen3.6-35B)",
+ARM_LABEL = {"jev-local": "Jev local (Qwen3.5-4B student, RTX 3090)", "jev-hosted": "Jev hosted (Qwen3.6-35B)",
              "jev-hosted-gemma": "Jev hosted (Gemma-4-26B)", "haiku": "Claude Haiku 5.5",
              "haiku-think": "Claude Haiku 5.5 + thinking", "rules": "Rules expert (teacher, instant)",
              "rules-lag": "Rules expert at 0.7 s per decision",

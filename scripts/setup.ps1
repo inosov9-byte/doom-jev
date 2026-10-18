@@ -15,7 +15,12 @@ $env:UV_CACHE_DIR = "$Root\cache\uv"
 
 # Game venv
 if (-not (Test-Path "$Root\venv")) { uv venv -p 3.13 "$Root\venv" -q }
-uv pip install -p "$Root\venv\Scripts\python.exe" -q vizdoom numpy opencv-python
+uv pip install -p "$Root\venv\Scripts\python.exe" -q vizdoom numpy opencv-python imageio-ffmpeg
+# ffmpeg for run videos (play.py, sbs_video.py call "ffmpeg"): the static build bundled with imageio-ffmpeg.
+# Put $Root\bin on PATH before runs that record video.
+New-Item -ItemType Directory -Force "$Root\bin" | Out-Null
+$ff = & "$Root\venv\Scripts\python.exe" -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"
+Copy-Item $ff "$Root\bin\ffmpeg.exe" -Force
 
 # Shareware WAD, verified against the id Software v1.9 shareware MD5
 $wad = "$Root\wad\doom1.wad"

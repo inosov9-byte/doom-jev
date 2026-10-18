@@ -36,8 +36,8 @@ def main(argv=None):
             self.end_headers()
             self.wfile.write(data)
 
-        def do_GET(self):
-            self._send(200, {"model": args.model, "adapter": args.adapter})
+        def do_GET(self):   # /health answers "ready" like Simple Jev (compare.py preflight checks it)
+            self._send(200, {"status": "ready", "model": args.model, "adapter": args.adapter})
 
         def do_POST(self):
             if self.path != "/v1/classifier":
