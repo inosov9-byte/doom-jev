@@ -14,17 +14,15 @@ Read this first in a new Claude Code session on the PC. It says where the work s
   - On 5 easy commands it learns after a ~110-step plateau (75% held-out agreement at step 150).
   - On the full 20-command expert set it was still predicting `forward` at step 300 of 450 (6.7% agreement).
   - Training ran at ~32 s per step on the laptop. The run was stopped. No usable model exists.
-- **Latency is the deciding factor.** The rule-based expert (the teacher) with an artificial decision delay, on E1M1 with perception v2:
+- **Latency is the deciding factor.** The rule-based expert (the teacher) with an artificial decision delay, E1M1, perception v2, seeds 1-5 (`C:	mp\jev-doom\smoke-v2b` on the laptop):
 
-| Decision delay | Result (seed 1) |
-|---|---|
-| 0 s | exit, 24.0 s |
-| 0.1 s | exit, 27.9 s |
-| 0.2 s | exit, 39.9 s |
-| 0.35 s | exit, 60.4 s |
-| 0.7 s (laptop Jev speed) | died at 65.7% |
-
-Seeds 2 to 5 ran after this file was written. If the laptop session finished them, see the "Latency sweep, all seeds" section at the end.
+| Decision delay | Clears | Median route progress | Median time |
+|---|---|---|---|
+| 0 s | 5/5 | 100% | 24.0 s |
+| 0.1 s | 4/5 | 100% | 32.2 s |
+| 0.2 s | 4/5 | 100% | 35.9 s |
+| 0.35 s | 2/5 | 89.3% | 45.4 s |
+| 0.7 s (laptop Jev speed) | 0/5 | 64.9% | 50.0 s |
 
 The target for the PC is local Jev under ~0.2 to 0.3 s per decision. On the laptop it takes 0.61 s, because Qwen3.5's linear-attention (DeltaNet) layers fall back to a slow PyTorch path on AMD under Windows. A third-party benchmark of 0.6 to 0.8B decision models measured 45 to 86 ms ([akitaonrails, 2026-10-10](https://akitaonrails.com/en/2026/10/10/which-jev-like-ai-decision-classifier-model-is-best/)). Model check, 2026-10-18: no Qwen3.6, 3.7 or 3.8 model smaller than 27B is published. Qwen3.5-0.8B is the newest small Qwen; Qwen3-0.6B is the standard-attention alternative.
 
