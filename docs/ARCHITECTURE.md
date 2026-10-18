@@ -120,6 +120,15 @@ Single-decision quality does not predict play. On the 60-situation probe (20 com
 
 ### The local student
 
-Distilling the rule-based expert into Qwen3.5-0.8B did not work on this hardware in one night. Two runs (hard labels, then soft labels with a higher learning rate) settled on predicting the most frequent command for every situation: held-out agreement stayed at 6.7%, the share of "forward" in the held-out slice. A short sanity run on five clear-cut commands also stayed at chance after 40 steps. Training runs at about 0.35 examples/s on the Radeon 890M, so each experiment costs hours, and the cause is not isolated yet. The earlier student distilled from the hosted Qwen teacher (13 commands) did learn (81 to 85% agreement), so the pipeline itself can learn; the open question is the 20-command expert task.
+Distilling the rule-based expert into Qwen3.5-0.8B takes far longer on this laptop than distilling an LLM teacher did. The first two runs (hard labels, then soft labels with a higher learning rate) were stopped at step 150 while still predicting "forward" for everything. The diagnosis:
+
+| Test | Result |
+|---|---|
+| Logits-at-last-position shortcut on vs off | identical to three decimals; not the cause |
+| Mid-training evaluation on vs off | identical; not the cause |
+| Prompts and targets as compiled by RFDT | correct (20 answer letters, targets map to the right commands) |
+| 5 clear-cut commands, 150 steps | flat at chance until about step 110, then a sharp drop: 75% held-out agreement at step 150 (chance 20%) |
+
+So the pipeline learns, after a long plateau, and the earlier runs were stopped just before that point would likely have arrived. A 450-step run on the full expert dataset was started afterwards (about 3.8 hours at 0.35 examples/s).
 
 Next step: the RTX 3090 Ti, where the same training runs an order of magnitude faster (estimate) and a larger student fits.
