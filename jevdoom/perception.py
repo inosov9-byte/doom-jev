@@ -7,7 +7,9 @@ heights, and the WAD geometry for raycasts and the route compass.
 from __future__ import annotations
 
 import dataclasses
+import os
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -19,12 +21,13 @@ RAYS = [("ahead", 0), ("30 left", 30), ("60 left", 60), ("30 right", -30), ("60 
 MAX_RAY = 1500
 USE_RANGE = 64           # Doom use reach in map units
 BODY_RADIUS = 16         # Doom player radius: a move is blocked by whatever either shoulder meets
+LINE_OF_FIRE = os.environ.get("JEVDOOM_LINE_OF_FIRE", "1") == "1"
 HISTORY = 4              # commands listed in "Recent commands"
 
 
 class Perception:
     def __init__(self, grid: NavGrid, compass: bool = True, goals: list[Subgoal] | None = None,
-                 stage_grids: list[NavGrid] | None = None):
+                 stage_grids: list[NavGrid] | None = None, stage_routes: list | None = None):
         """goals/stage_grids: level progression (progression.py). Without them the only goal is the
         exit and the text is exactly the single-level E1M1 text."""
         self.grid = grid
@@ -60,6 +63,16 @@ class Perception:
         self.at_goal = False                          # close to the goal with a clear walk to it
         self.live_check_tic = -10**9
         self.plan_fail_tic = -10**9
+        self.chase_tic = -10**9
+        # Path planning never runs inside describe(): A* took up to 0.7 s per decision on E1M8. Each
+        # stage starts on a route planned before the game (stage_routes); replans run on this worker
+        # and are swapped in when done, while decisions keep using the last route.
+        self.stage_routes = stage_routes or []
+        self._planner = ThreadPoolExecutor(max_workers=1)
+        self._job = None                              # (future, kind, stage)
+        self.replan = False
+        if self.stage_routes and self.stage_routes[0]:
+            self.route = list(self.stage_routes[0])
 
     # -- raycasting -----------------------------------------------------------
     def body_ray(self, obs: Obs, rel_deg: float) -> tuple[float, str, float | None]:
@@ -224,7 +237,8 @@ class Perception:
             if not done:
                 return
             self.stage += 1
-            self.route, self.idx = None, 0
+            r = self.stage_routes[self.stage] if self.stage < len(self.stage_routes) else None
+            self.route, self.idx = (list(r) if r else None), 0
 
     def route_bearing(self, obs: Obs) -> float | None:
         """Bearing the compass would report (positive = left), or None without a route."""
@@ -268,7 +282,7 @@ class Perception:
             if i not in skip and i < len(floor):
                 floor[i], ceil[i] = f, c
         self.live_grids[stage] = NavGrid(dataclasses.replace(wm, floor=floor, ceil=ceil))
-        self.route, self.idx = None, 0
+        self.replan = True                            # keep the old route until the new one is ready
         return self.live_grids[stage]
 
     KILL_TARGETS = {"baron of hell": "BaronOfHell"}
@@ -291,23 +305,49 @@ class Perception:
 
     REPLAN_TICS = 35          # after a failed plan, try again at most once a second
 
+    def _submit(self, kind: str, grid: NavGrid, a, b, max_expand: int = 200_000) -> None:
+        if self._job is None:
+            self._job = (self._planner.submit(grid.plan, a, b, max_expand), kind, self.stage)
+
+    def _collect(self, obs: Obs) -> None:
+        if self._job is None or not self._job[0].done():
+            return
+        fut, kind, stage = self._job
+        self._job = None
+        res = fut.result()
+        if stage != self.stage:
+            return                                    # planned for a finished stage
+        if res:
+            self.route, self.idx = res, 0
+        elif kind == "route":
+            self.plan_fail_tic = obs.tic
+
     def _route_target(self, obs: Obs):
         pos = (obs.x, obs.y)
         grid = self._stage_grid(obs)
+        self._collect(obs)
         gpos = self.goal.pos
+        if self.goal.kind == "kill":
+            # Chase the live target when the grid reaches it (Barons leave their alcoves and roam);
+            # otherwise the stand spot. Bounded search, at most once a second, in the background.
+            live = self._goal_pos(obs)
+            if self.route and math.dist(self.route[-1], live) > 128 and obs.tic - self.chase_tic >= self.REPLAN_TICS:
+                self.chase_tic = obs.tic
+                self._submit("chase", grid, pos, live, 12_000)
+            if self.route:
+                gpos = self.route[-1]
+        off = 0.0
         if self.route:
             lo, hi = self.idx, min(len(self.route), self.idx + 60)
             best = min(range(lo, hi), key=lambda i: math.dist(pos, self.route[i]))
             self.idx = best
             off = math.dist(pos, self.route[best])
-        if not self.route or off > 96:
-            if not self.route and obs.tic - self.plan_fail_tic < self.REPLAN_TICS:
-                return None
-            self.route = grid.plan(pos, gpos)
-            self.idx = 0
-            if not self.route:
-                self.plan_fail_tic = obs.tic
-                return None
+        if (not self.route or off > 96 or self.replan) and obs.tic - self.plan_fail_tic >= self.REPLAN_TICS:
+            if self._job is None:
+                self.replan = False
+            self._submit("route", grid, pos, gpos)
+        if not self.route:
+            return None
         path = self.route
         target = path[min(self.idx + 1, len(path) - 1)]
         for j in range(min(self.idx + 14, len(path) - 1), self.idx, -2):
@@ -337,9 +377,19 @@ class Perception:
         vis = sorted((m for m in obs.monsters if m.visible), key=lambda m: obs.dist_to(m.x, m.y))[:3]
         if vis:
             enemies = []
+            floor, ceil = self._live_heights(obs)
+            psec = self.grid.sector_at(obs.x, obs.y)
+            eye = (floor[psec] if psec >= 0 else 0.0) + self.EYE
             for m in vis:
                 d, b = obs.dist_to(m.x, m.y), obs.bearing_to(m.x, m.y)
-                tol = max(3.0, math.degrees(math.atan2(16, max(d, 1))))
+                msec = self.grid.sector_at(m.x, m.y)
+                # Seen is not shootable: a Baron on a ledge above the pit showed its legs, and every
+                # shot hit the ledge face (E1M8). Line of fire: eye to the monster's chest.
+                if LINE_OF_FIRE and msec >= 0 and not self._sight_clear((obs.x, obs.y), eye, (m.x, m.y), floor[msec] + self.CHEST, floor, ceil):
+                    enemies.append(f"{MONSTER_NAMES.get(m.name, m.name)} {d:.0f} away, {_side(b, ahead=0.5)}, out of the line of fire")
+                    continue
+                r = 24 if m.name == "BaronOfHell" else 16      # Baron's radius: wide enough to shoot, not re-aim (E1M8)
+                tol = max(3.0, math.degrees(math.atan2(r, max(d, 1))))
                 aim = "in the crosshair" if abs(b) <= tol else _side(b, ahead=0.5)   # exact angle for aiming
                 enemies.append(f"{MONSTER_NAMES.get(m.name, m.name)} {d:.0f} away, {aim}")
             parts.append("Enemies in view: " + "; ".join(enemies) + ".")
@@ -408,6 +458,7 @@ class Perception:
         self.history = []
         self.stage = 0
         self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
+        self._job = None
 
 
 def _side(b: float, ahead: float = 7.5) -> str:

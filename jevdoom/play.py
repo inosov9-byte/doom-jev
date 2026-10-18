@@ -169,12 +169,14 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
         goals = [Subgoal("exit", "exit", st, mid)]
     grids = stage_grids(m, goals)
     grid = grids[-1]
-    perc = Perception(grid, compass=compass, goals=goals, stage_grids=grids)
-    # route length over all stages: start -> subgoal 1 -> ... -> exit
-    stage_len, here = [], start
+    # route over all stages: start -> subgoal 1 -> ... -> exit, planned before the game starts
+    stage_len, stage_routes, here = [], [], start
     for gl, gr in zip(goals, grids):
-        stage_len.append(path_length(gr.plan(here, gl.pos) or [here, gl.pos]))
+        r = gr.plan(here, gl.pos)
+        stage_routes.append(r)
+        stage_len.append(path_length(r or [here, gl.pos]))
         here = gl.pos
+    perc = Perception(grid, compass=compass, goals=goals, stage_grids=grids, stage_routes=stage_routes)
     total_route = sum(stage_len)
 
     g = make_game(wad, map_name, skill, visible=window, timeout_s=timeout, seed=seed, cheats=loadout is not None)
@@ -237,7 +239,8 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                 n_dec += 1
                 rec = {"id": f"{run_dir.name}-{n_dec:05d}", "group_id": f"{run_dir.name}-{n_dec // 20:04d}",
                        "tic": tic, "obs_tic": d["obs_tic"], "state": d["state"], "perception_s": round(d["perception_s"], 3),
-                       "error": d["error"], "pos": [round(obs.x), round(obs.y)], "health": obs.health}
+                       "error": d["error"], "pos": [round(obs.x), round(obs.y)], "health": obs.health,
+                       "dealt": round(obs.damage_dealt), "hits": obs.hits}
                 dec = d["decision"]
                 if dec is not None:
                     rec.update(choice=dec.choice, probabilities=dec.probabilities, latency=round(dec.latency, 3),
@@ -296,6 +299,7 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                    "route_progress_pct": round(100 * (1 - best_left / total_route), 1),
                    "game_seconds": round(tic / TICRATE, 1), "wall_seconds": round(wall, 1),
                    "kills": obs.kills if obs else 0, "damage_taken": round(obs.damage_taken) if obs else 0,
+                   "damage_dealt": round(obs.damage_dealt) if obs else 0, "hits": obs.hits if obs else 0,
                    "health_end": round(obs.health) if obs else None,
                    "start_loadout": loadout, "end_loadout": from_obs(obs) if obs else None,
                    "decisions": n_dec, "errors": n_err, "decisions_per_s": round(n_dec / max(wall, 1e-9), 2),

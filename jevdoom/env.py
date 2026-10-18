@@ -17,7 +17,8 @@ BI = {b: i for i, b in enumerate(BUTTONS)}
 
 VARS = [V.POSITION_X, V.POSITION_Y, V.POSITION_Z, V.ANGLE, V.HEALTH, V.ARMOR, V.DEAD,
         V.SELECTED_WEAPON, V.AMMO2, V.AMMO3, V.WEAPON2, V.WEAPON3,
-        V.KILLCOUNT, V.DAMAGE_TAKEN, V.AMMO5, V.WEAPON4, V.WEAPON5]   # AMMO5 = rockets
+        V.KILLCOUNT, V.DAMAGE_TAKEN, V.AMMO5, V.WEAPON4, V.WEAPON5,   # AMMO5 = rockets
+        V.DAMAGECOUNT, V.HITCOUNT]                                 # damage dealt, hits landed
 
 MONSTER_NAMES = {"Zombieman": "zombieman", "ShotgunGuy": "shotgun guy", "DoomImp": "imp",
                  "Demon": "demon", "Spectre": "spectre", "LostSoul": "lost soul",
@@ -69,6 +70,8 @@ class Obs:
     rockets: float = 0
     has_chaingun: bool = False
     has_launcher: bool = False
+    damage_dealt: float = 0
+    hits: int = 0
     sector: int = -1
     monsters: list[Thing] = field(default_factory=list)   # alive monsters; visible flag from labels buffer
     pickups: list[Thing] = field(default_factory=list)
@@ -123,7 +126,7 @@ def observe(g: vzd.DoomGame, tic: int) -> Obs | None:
     obs = Obs(tic=tic, x=v[0], y=v[1], angle=v[3], health=v[4], armor=v[5], dead=bool(v[6]),
               weapon=int(v[7]), bullets=v[8], shells=v[9], has_shotgun=bool(v[11]),
               kills=int(v[12]), damage_taken=v[13], rockets=v[14], has_chaingun=bool(v[15]),
-              has_launcher=bool(v[16]), screen=s.screen_buffer)
+              has_launcher=bool(v[16]), damage_dealt=v[17], hits=int(v[18]), screen=s.screen_buffer)
     visible = {l.object_id for l in s.labels}
     for o in s.objects:
         if o.category == "Self":

@@ -22,6 +22,7 @@ HEALTH_ITEMS = ("stimpack", "medikit", "health bonus")
 MELEE = ("demon", "spectre")   # bite only: keep them from reaching the player
 MELEE_ENGAGE = 450             # demons are fought from this far: they come to the player anyway
 BOSSES = ("baron",)            # fought at any range when in view
+BOSS_NEAR, BOSS_FAR = 300, 500  # Baron kiting band
 COVER_HEALTH = 70             # below this, a hit from a boss sends the expert behind cover
 BARREL_BLAST = 160             # barrel explosion radius is 128; never shoot one closer than this
 KILL_GOALS = ("baron of hell",)
@@ -53,7 +54,7 @@ def parse_state(s: str) -> dict:
     if m and m.group(1) != "none":
         for part in m.group(1).split(";"):
             e = re.match(r"\s*([a-z ]+?) (\d+) away, (.+)", part)
-            if e:
+            if e and "out of the line of fire" not in e.group(3):     # cannot be shot from here: not a target
                 f["enemies"].append({"kind": e.group(1), "dist": int(e.group(2)), "angle": _angle(e.group(3)),
                                      "crosshair": e.group(3).startswith("in the crosshair")})
     m = re.search(r"Pickups in view: ([^.]*)\.", s)
@@ -179,13 +180,13 @@ def decide(state: str) -> str:
             if a is not None and abs(a) >= 30:
                 return turn_toward(a)
             return "forward" if d > 120 else "forward_short"
-        if t["kind"] in BOSSES and t["crosshair"]:
-            # Baron (E1M8): claws up close, slow fireballs at range. Keep out of reach and keep moving.
-            if t["dist"] < 130:
-                return "back"
-            if t["dist"] <= 500:
-                return _open_side(f, "fire_strafe_")
-            return "forward_short"                         # shotgun spread: close in before shooting
+        if t["kind"] in BOSSES:
+            # Baron (E1M8): every hit the expert took came within 250 units (claws, fireballs too close
+            # to dodge), none beyond. Kite: back off inside 300, strafe-fire at 300-500, close in beyond.
+            if t["dist"] < BOSS_NEAR:
+                return "back" if f["rays"].get("behind", (0.0, ""))[0] > 120 else _open_side(f, "fire_strafe_")
+            if t["crosshair"]:
+                return _open_side(f, "fire_strafe_") if t["dist"] <= BOSS_FAR else "forward_short"
         if t["crosshair"]:
             if f["damage"] > 0 and "fire" in (f["last"] or ""):
                 return _open_side(f, "fire_strafe_")       # getting hit while shooting: dodge and keep firing
