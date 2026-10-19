@@ -75,6 +75,7 @@ class Perception:
         self.doors_seen_open: set[int] = set()
         self.live_grids: dict[int, NavGrid] = {}     # stage -> grid rebuilt from live sector heights
         self._stand_cache: tuple = (None, 0.0)
+        self._lines_at: dict = {}                      # switch target point -> its line
         self._reach: dict[tuple, tuple] = {}           # (id(grid), goal) -> (grid, cells the goal is reachable from)
         self.at_goal = False                          # close to the goal with a clear walk to it
         self.live_check_tic = -10**9
@@ -165,14 +166,18 @@ class Perception:
                         eta = max(0.0, (self.grid.ceil_s[door] - now) / 2 / 35)
                         state = f"opening, fully open in about {max(0.5, round(eta * 2) / 2):g} s"
                     return d, f"door ({state})", nukage, thing
-                if i in self.lift_walls:              # the raised lift itself (E1M8: special 62 before the Barons)
+                # The raised lift itself (E1M8: special 62 before the Barons), seen from the switch side: Doom uses
+                # a line from its front only. From the lift's own top the face is the drop on the far side and use
+                # does nothing (E1M2's exit lift: a run stood beside it pressing use for 45 s, 3 units short of
+                # the walk-over line that lowers it).
+                if i in self.lift_walls and cur == f and self.m.sector_tag[nxt] == self.m.lines[i].tag:
                     return d, self._lift_state(obs, nxt), nukage, thing
                 return d, "wall", nukage, thing
             if nf - cf > MAX_STEP:
                 # A lift under a high ceiling reads as a ledge, not a wall (E1M5: the lift at the top of the
                 # stairs to the teleport room; the expert slid along its face for 20 s without pressing use).
                 # Only when the lift is the far side: E1M2's exit lift has a switch face toward the step above.
-                if i in self.lift_walls and self.m.sector_tag[nxt] == self.m.lines[i].tag:
+                if i in self.lift_walls and cur == f and self.m.sector_tag[nxt] == self.m.lines[i].tag:
                     return d, self._lift_state(obs, nxt), nukage, thing
                 return d, "ledge too high to climb", nukage, thing
             if cf - nf > MAX_STEP and self._dead_end(ox + dx * (d + 12), oy + dy * (d + 12)):
@@ -517,16 +522,39 @@ class Perception:
         self.at_goal = left < 120 and grid.walkable_line(pos, gpos) and self._before_switch(pos)
         if self.at_goal:
             target = self._goal_pos(obs)
+            line = self._goal_line()
+            if line is not None:
+                target = self._line_aim(line, pos)
         return target, left
+
+    def _goal_line(self):
+        """The switch line of a switch or exit goal (its target is the line's midpoint), or None."""
+        g = self.goal
+        if g.kind not in ("switch", "exit") or g.pos == g.target:
+            return None
+        if tuple(g.target) not in self._lines_at:
+            self._lines_at[tuple(g.target)] = next((l for l in self.m.lines if math.dist(
+                ((l.v1[0] + l.v2[0]) / 2, (l.v1[1] + l.v2[1]) / 2), g.target) < 1), None)
+        return self._lines_at[tuple(g.target)]
+
+    @staticmethod
+    def _line_aim(line, pos) -> tuple[float, float]:
+        """The point of a switch line nearest the player, kept 24 units in from its ends. Use reaches 64 units
+        along the view: aimed at the midpoint from near one end, the view met the line at a grazing angle and a
+        few degrees off put it out of reach (E1M2's switch above a ledge: use pressed for 40 s, stalled at 86%)."""
+        (x1, y1), (x2, y2) = line.v1, line.v2
+        dx, dy = x2 - x1, y2 - y1
+        n = math.hypot(dx, dy) or 1.0
+        m = min(24.0, n / 2) / n
+        t = max(m, min(1.0 - m, ((pos[0] - x1) * dx + (pos[1] - y1) * dy) / (n * n)))
+        return (x1 + t * dx, y1 + t * dy)
 
     def _before_switch(self, pos) -> bool:
         """For a switch or exit switch: the player stands in front of its line, where use reaches it. Beside
         the line the switch lies straight ahead along the wall and use hits nothing (E1M8: the stair switch
         after the Barons; the expert pressed use from its side for 45 s)."""
         g = self.goal
-        if g.kind not in ("switch", "exit") or g.pos == g.target:
-            return True
-        line = next((l for l in self.m.lines if math.dist(((l.v1[0] + l.v2[0]) / 2, (l.v1[1] + l.v2[1]) / 2), g.target) < 1), None)
+        line = self._goal_line()
         if line is None:
             return True
         (x1, y1), (x2, y2) = line.v1, line.v2
