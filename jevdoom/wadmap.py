@@ -56,6 +56,7 @@ class MapData:
     sector_tag: np.ndarray | None = None
     lift_sectors: set[int] = field(default_factory=set)      # moving floors: step limits ignored
     floor_flat: list[str] | None = None                       # floor texture per sector (stair building follows it)
+    moved_sectors: set[int] = field(default_factory=set)     # floors moved by a fired trigger, at their end height
 
     @property
     def exit_lines(self) -> list[Line]:
@@ -203,7 +204,13 @@ class NavGrid:
         # has a bare face on one side, and the expert pressed use on it until it died.
         manual = {l.back for l in self.m.lines if l.special in DOOR_SPECIALS and l.back != -1
                   and self.m.sector_tag[l.back] == 0}
+        # Crossing a teleport line from its front teleports the player (E1M5: the route skirted a teleport pad
+        # and the expert was sent back 1,700 units each time it stepped in). End-level teleporters are goals.
+        end_tags = {int(t) for t, sp in zip(self.m.sector_tag, self.m.special) if sp == END_LEVEL_SECTOR and t}
         for l in self.m.lines:
+            if l.special in (39, 97) and l.back != -1 and l.tag not in end_tags:
+                out.append((*l.v1, *l.v2, {l.front}))
+                continue
             if l.back != -1 and not l.flags & 1 and l.special not in DOOR_SPECIALS                     and (l.front in manual) != (l.back in manual):
                 out.append((*l.v1, *l.v2, {l.back if l.front in manual else l.front}))
                 continue

@@ -163,7 +163,8 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     start = next((float(t[0]), float(t[1])) for t in m.things if t[3] == 1)
     try:
         held = set(loadout["weapons"]) if loadout else set()
-        goals = with_supply_detours(m, with_weapon_detours(m, load_or_solve(m, start), start, held=held), start)
+        goals = with_supply_detours(m, with_weapon_detours(m, load_or_solve(m, start), start, held=held), start,
+                                    held=held)
     except RuntimeError:          # planner found no progression (E1M3/E1M4/E1M7): exit only, compass if any route
         st, mid, _ = exit_target(m)
         goals = [Subgoal("exit", "exit", st, mid)]

@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 from .env import DECOR_NAMES, MONSTER_NAMES, SOLID_DECOR, PICKUP_NAMES, WEAPON_NAMES, Obs
-from .progression import DOOR_TRIGGERS, KEY_DOORS, KEY_THINGS, LIFT_TRIGGERS, Subgoal
+from .progression import DOOR_TRIGGERS, KEY_DOORS, KEY_THINGS, LIFT_TRIGGERS, Subgoal, walk_open_grid
 from .wadmap import DAMAGE_SECTORS, DOOR_SPECIALS, EXIT_SPECIALS, MAX_STEP, PLAYER_HEIGHT, NavGrid, exit_target, path_length
 
 RAYS = [("ahead", 0), ("30 left", 30), ("60 left", 60), ("30 right", -30), ("60 right", -60), ("behind", 180)]
@@ -158,18 +158,24 @@ class Perception:
                         state = f"opening, fully open in about {max(0.5, round(eta * 2) / 2):g} s"
                     return d, f"door ({state})", nukage, thing
                 if i in self.lift_walls:              # the raised lift itself (E1M8: special 62 before the Barons)
-                    lift = nxt
-                    before = self.lift_floor_prev.get(lift)
-                    moving = before is not None and obs.heights.get(lift, (before, 0))[0] < before - 0.5
-                    return d, "lift (lowering)" if moving else "lift (raised)", nukage, thing
+                    return d, self._lift_state(obs, nxt), nukage, thing
                 return d, "wall", nukage, thing
             if nf - cf > MAX_STEP:
+                # A lift under a high ceiling reads as a ledge, not a wall (E1M5: the lift at the top of the
+                # stairs to the teleport room; the expert slid along its face for 20 s without pressing use).
+                if i in self.lift_walls:
+                    return d, self._lift_state(obs, nxt), nukage, thing
                 return d, "ledge too high to climb", nukage, thing
             if cf - nf > MAX_STEP and self._dead_end(ox + dx * (d + 12), oy + dy * (d + 12)):
                 return d, DEAD_DROP, nukage, thing
             if nukage is None and self.m.special[nxt] in DAMAGE_SECTORS:
                 nukage = d
         return float(MAX_RAY), "open", nukage, thing
+
+    def _lift_state(self, obs: Obs, lift: int) -> str:
+        before = self.lift_floor_prev.get(lift)
+        moving = before is not None and obs.heights.get(lift, (before, 0))[0] < before - 0.5
+        return "lift (lowering)" if moving else "lift (raised)"
 
     def _dead_end(self, x: float, y: float) -> bool:
         """True when (x, y) lies where the current goal cannot be reached from (reverse reachability
@@ -385,13 +391,17 @@ class Perception:
         changed = [i for i, (f, c) in obs.heights.items()
                    if i not in skip and i < len(base.m.floor)
                    and (abs(f - base.m.floor[i]) > self.LIVE_DELTA or abs(c - base.m.ceil[i]) > self.LIVE_DELTA)]
-        if not changed:
+        # A floor moved by a trigger is a lift while it moves; settled at its end height it is plain floor again.
+        settled = {i for i in base.m.moved_sectors & base.m.lift_sectors
+                   if i in obs.heights and abs(obs.heights[i][0] - wm.floor[i]) < 1}
+        if not changed and not settled:
             return base
         floor, ceil = wm.floor.copy(), wm.ceil.copy()
         for i, (f, c) in obs.heights.items():
             if i not in skip and i < len(floor):
                 floor[i], ceil[i] = f, c
-        self.live_grids[stage] = NavGrid(dataclasses.replace(wm, floor=floor, ceil=ceil))
+        lifts = wm.lift_sectors - settled - (wm.moved_sectors - base.m.lift_sectors)
+        self.live_grids[stage] = NavGrid(dataclasses.replace(wm, floor=floor, ceil=ceil, lift_sectors=lifts))
         self.replan = True                            # keep the old route until the new one is ready
         return self.live_grids[stage]
 
@@ -417,7 +427,9 @@ class Perception:
 
     def _submit(self, kind: str, grid: NavGrid, a, b, max_expand: int = 200_000) -> None:
         if self._job is None:
-            self._job = (self._planner.submit(grid.plan, a, b, max_expand), kind, self.stage)
+            fn = _plan_or_walk_open if kind == "route" else grid.plan
+            self._job = (self._planner.submit(fn, grid, a, b, max_expand) if kind == "route"
+                         else self._planner.submit(fn, a, b, max_expand), kind, self.stage)
 
     def _collect(self, obs: Obs) -> None:
         if self._job is None or not self._job[0].done():
@@ -598,6 +610,16 @@ class Perception:
         self.stage = 0
         self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
         self._job = None
+
+
+def _plan_or_walk_open(grid: NavGrid, a, b, max_expand: int):
+    """A route on the stage grid, or else one through doors opened by walk-over lines on the way (after a
+    fall into a pit the stage grid has no way out; E1M5's pool below the bridge)."""
+    path = grid.plan(a, b, max_expand)
+    if path is None:
+        g = walk_open_grid(grid, a)
+        path = g.plan(a, b, max_expand) if g is not None else None
+    return path
 
 
 def _side(b: float, ahead: float = 7.5) -> str:

@@ -59,7 +59,8 @@ def world(m: MapData, keys: frozenset, opened: frozenset, strict_lifts: bool = F
     stair_step = {l.tag: STAIR_SPECIALS[l.special] for l in m.lines if l.special in STAIR_SPECIALS and l.tag}
     lower_tags = {l.tag for l in m.lines if l.special in LOWER_TO_LOWEST and l.tag}
     lower_tags |= {b[2] for name, b in BOSS_TRIGGERS.items() if name == m.name}
-    floor = m.floor
+    floor_moves = {l.tag: l.special for l in m.lines if l.special in FLOOR_MOVES and l.tag}
+    floor, special, moved = m.floor, m.special, set()
     for tag in opened:
         secs = {i for i, t in enumerate(m.sector_tag) if t == tag}
         if tag in stair_step:
@@ -74,13 +75,44 @@ def world(m: MapData, keys: frozenset, opened: frozenset, strict_lifts: bool = F
             lifts |= secs
         elif tag in door_tags:
             doors |= secs
+        elif tag in floor_moves:
+            floor = floor.copy() if floor is m.floor else floor
+            special = special.copy() if special is m.special else special
+            for s in secs:
+                floor[s], special[s] = _moved_floor(m, s, floor_moves[tag], floor, special[s])
+            lifts |= secs              # boardable while it moves (E1M9: the exit bridge rises under the player)
+            moved |= secs
         else:
             lifts |= secs
-    return dataclasses.replace(m, door_sectors=doors, lift_sectors=lifts, floor=floor)
+    return dataclasses.replace(m, door_sectors=doors, lift_sectors=lifts, floor=floor, special=special,
+                               moved_sectors=moved)
 
 
 STAIR_SPECIALS = {7: 8, 8: 8, 100: 16, 127: 16}   # stair builders -> step height (100, 127: turbo 16)
 LOWER_TO_LOWEST = {23, 37, 38, 60, 82, 84}         # floor lowers to the lowest neighbouring floor
+# Floor movers whose end height is known (p_floor.c, p_plats.c): rule, offset. The planner treats a fired
+# one as a lift (it can be boarded while it moves) at its end height; perception drops the lift once the
+# live floor has settled there. As a lift for good, E1M5's raised bridge (tag 6) and the nukage pool beside
+# it read as one area, so falling off was a drop with a way back.
+FLOOR_MOVES = {**dict.fromkeys((18, 69, 119, 128, 20, 22, 47, 68, 95), ("next", 0)),
+               **dict.fromkeys((5, 91, 101, 64, 24), ("ceil", 0)), **dict.fromkeys((55, 56, 65, 94), ("ceil", -8)),
+               **dict.fromkeys((19, 45, 83, 102), ("high", 0)), **dict.fromkeys((36, 70, 71, 98), ("high", 8)),
+               **dict.fromkeys((58, 92, 15, 66, 59, 93), ("up", 24)), 14: ("up", 32), 67: ("up", 32), 140: ("up", 512)}
+CLEARS_SPECIAL = {20, 22, 47, 68, 95}               # raise to next floor and change: the damage special goes
+
+
+def _moved_floor(m: MapData, s: int, line_special: int, floor: np.ndarray, special: int) -> tuple[float, int]:
+    rule, off = FLOOR_MOVES[line_special]
+    nb = {l.front if l.back == s else l.back for l in m.lines if s in (l.front, l.back)} - {-1, s}
+    if rule == "up" or not nb:
+        h = floor[s] + (off if rule == "up" else 0)
+    elif rule == "next":
+        h = min((floor[n] for n in nb if floor[n] > floor[s]), default=floor[s])
+    elif rule == "ceil":
+        h = min(min(m.ceil[n] for n in nb), m.ceil[s]) + off
+    else:
+        h = max(floor[n] for n in nb) + off
+    return h, (0 if line_special in CLEARS_SPECIAL else special)
 
 
 def _build_stairs(m: MapData, start: set[int], step: float, floor: np.ndarray) -> np.ndarray:
@@ -227,9 +259,12 @@ def load_or_solve(m: MapData, start: tuple[float, float]) -> list[Subgoal]:
     return goals
 
 
-DETOUR_WEAPONS = {2001: "shotgun"}   # thing type -> weapon worth a short detour (E1M2: the expert died
-                                     # in pistol-only imp fights next to a shotgun 152 units off its route)
+DETOUR_WEAPONS = {2001: "shotgun", 2002: "chaingun"}   # thing type -> weapon worth a short detour (E1M2: the
+                                     # expert died in pistol-only imp fights next to a shotgun 152 units off its route)
 MAX_DETOUR = 1000.0                  # extra route units; E1M2 shotgun +961, ~2 s of running
+# A chaingun only matters once the shells are gone: worth a short detour only (E1M4: +169 beside the blue
+# key room, where the expert ran out of shells and died to imps with 140 bullets for the pistol; E1M1 +801).
+WEAPON_DETOUR = {"chaingun": 400.0}
 
 
 def with_weapon_detours(m: MapData, goals: list[Subgoal], start: tuple[float, float],
@@ -249,7 +284,7 @@ def with_weapon_detours(m: MapData, goals: list[Subgoal], start: tuple[float, fl
             base, a, b = gr.plan(here, g.pos), gr.plan(here, pos), gr.plan(pos, g.pos)
             if base and a and b:
                 extra = path_length(a) + path_length(b) - path_length(base)
-                if extra <= max_detour and (best is None or extra < best[1]):
+                if extra <= min(max_detour, WEAPON_DETOUR.get(name, max_detour)) and (best is None or extra < best[1]):
                     best = (i, extra)
             here = g.pos
         if best is not None:
@@ -264,14 +299,19 @@ SUPPLIES = {2049: "box of shells", 2018: "green armor", 2012: "medikit", 2013: "
 MAX_SUPPLY_DETOUR = 1500.0
 
 
+# Without a boss: shells on cheap detours, when a shotgun is carried in (E1M4 starts with 15 shells; the
+# expert ran dry by 25-35 s and died to imps, a box of shells 241 units off the first stretch).
+CHEAP_SUPPLIES = {2049: ("box of shells", 600.0), 2008: ("shells", 200.0)}
+
+
 def with_supply_detours(m: MapData, goals: list[Subgoal], start: tuple[float, float],
-                        max_detour: float = MAX_SUPPLY_DETOUR) -> list[Subgoal]:
+                        max_detour: float = MAX_SUPPLY_DETOUR, held: set[str] = frozenset()) -> list[Subgoal]:
     """Before the first kill subgoal, visit every supply whose detour from that stage's route is
     within max_detour, in nearest-neighbour order. The visit is done on arrival (perception.py)."""
     from .wadmap import path_length
     k = next((i for i, g in enumerate(goals) if g.kind == "kill"), None)
     if k is None:
-        return goals
+        return _cheap_supplies(m, goals, start) if "shotgun" in held else goals
     gr = stage_grids(m, goals, strict_lifts=True)[k]
     here = goals[k - 1].pos if k else start
     base = gr.plan(here, goals[k].pos)
@@ -293,6 +333,62 @@ def with_supply_detours(m: MapData, goals: list[Subgoal], start: tuple[float, fl
         order.append(nxt)
         cur = nxt.pos
     return goals[:k] + order + goals[k:]
+
+
+def _cheap_supplies(m: MapData, goals: list[Subgoal], start: tuple[float, float]) -> list[Subgoal]:
+    """Each CHEAP_SUPPLIES item goes before the stage whose route it is the cheapest detour from, if within
+    its limit; items of one stage in nearest-neighbour order from the stage start."""
+    from .wadmap import path_length
+    grids = stage_grids(m, goals, strict_lifts=True)
+    starts = [start] + [g.pos for g in goals[:-1]]
+    bases = [gr.plan(a, g.pos) for gr, a, g in zip(grids, starts, goals)]
+    per_stage: dict[int, list[Subgoal]] = {}
+    for t in m.things:
+        name, limit = CHEAP_SUPPLIES.get(t[3], (None, 0.0))
+        if not name or (len(t) > 4 and (not t[4] & SKILL_FLAG[3] or t[4] & 16)):
+            continue
+        pos, best = (float(t[0]), float(t[1])), None
+        for i, (gr, a, g, base) in enumerate(zip(grids, starts, goals, bases)):
+            if not base or math.dist(a, pos) + math.dist(pos, g.pos) - path_length(base) > limit:
+                continue                  # straight-line bound first: A* per item and stage is slow
+            p1, p2 = gr.plan(a, pos), gr.plan(pos, g.pos)
+            if p1 and p2:
+                extra = path_length(p1) + path_length(p2) - path_length(base)
+                if extra <= limit and (best is None or extra < best[1]):
+                    best = (i, extra)
+        if best:
+            per_stage.setdefault(best[0], []).append(Subgoal("item", name, pos, pos))
+    out = []
+    for i, (g, a) in enumerate(zip(goals, starts)):
+        todo, cur = per_stage.get(i, []), a
+        while todo:
+            nxt = min(todo, key=lambda s: math.dist(cur, s.pos))
+            todo.remove(nxt)
+            out.append(nxt)
+            cur = nxt.pos
+        out.append(g)
+    return out
+
+
+def walk_open_grid(g: NavGrid, pos: tuple[float, float]) -> NavGrid | None:
+    """The grid with the doors open whose walk-over trigger lines the player can reach from pos, or None if
+    there are none. The way out of a pit often runs over one (E1M5: from the nukage pool below the bridge, a
+    manual door, a corridor and a WR line that opens the door back to the start)."""
+    m, opened = g.m, set()
+    while True:
+        reach = g.reachable(pos)
+        tags = set()
+        for l in m.lines:
+            if DOOR_TRIGGERS.get(l.special) == "W" and l.tag and l.tag not in opened:
+                pts, _ = _stand_points(l, 24.0)
+                if any(0 <= (rc := g.to_cell(*p))[0] < g.h and 0 <= rc[1] < g.w and reach[rc] for p in pts):
+                    tags.add(l.tag)
+        if not tags:
+            break
+        opened |= tags
+        doors = m.door_sectors | {i for i, t in enumerate(m.sector_tag) if t in opened}
+        g = NavGrid(dataclasses.replace(m, door_sectors=doors))
+    return g if opened else None
 
 
 def stage_grids(m: MapData, goals: list[Subgoal], strict_lifts: bool = False) -> list[NavGrid]:
