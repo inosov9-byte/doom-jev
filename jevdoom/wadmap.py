@@ -27,6 +27,7 @@ SKILL_FLAG = {1: 1, 2: 1, 3: 2, 4: 4, 5: 4}                             # WAD th
 MAX_STEP = 24
 PLAYER_HEIGHT = 56
 DOOR_SPECIALS = {1, 26, 27, 28, 31, 32, 33, 34, 117, 118}
+LOCKED_DOORS = {26: "blue", 32: "blue", 27: "yellow", 34: "yellow", 28: "red", 33: "red"}
 EXIT_SPECIALS = {11, 51, 52, 124, 197, 198}
 NORMAL_EXITS = {11, 52, 197}          # 51, 124, 198 are secret exits
 DAMAGE_SECTORS = {4, 5, 7, 11, 16}
@@ -57,6 +58,7 @@ class MapData:
     lift_sectors: set[int] = field(default_factory=set)      # moving floors: step limits ignored
     floor_flat: list[str] | None = None                       # floor texture per sector (stair building follows it)
     moved_sectors: set[int] = field(default_factory=set)     # floors moved by a fired trigger, at their end height
+    keys: frozenset = frozenset()                             # keys held in this world state (locked door faces)
 
     @property
     def exit_lines(self) -> list[Line]:
@@ -209,6 +211,11 @@ class NavGrid:
         end_tags = {int(t) for t, sp in zip(self.m.sector_tag, self.m.special) if sp == END_LEVEL_SECTOR and t}
         for l in self.m.lines:
             if l.special in (39, 97) and l.back != -1 and l.tag not in end_tags:
+                out.append((*l.v1, *l.v2, {l.front}))
+                continue
+            # A door with a manual face and a locked face opens only from the manual side without the key
+            # (E1M6: the route to the yellow key ran into a blue-locked face of a door opened from behind).
+            if l.special in LOCKED_DOORS and LOCKED_DOORS[l.special] not in self.m.keys and l.back != -1:
                 out.append((*l.v1, *l.v2, {l.front}))
                 continue
             if l.back != -1 and not l.flags & 1 and l.special not in DOOR_SPECIALS                     and (l.front in manual) != (l.back in manual):

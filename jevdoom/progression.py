@@ -85,7 +85,7 @@ def world(m: MapData, keys: frozenset, opened: frozenset, strict_lifts: bool = F
         else:
             lifts |= secs
     return dataclasses.replace(m, door_sectors=doors, lift_sectors=lifts, floor=floor, special=special,
-                               moved_sectors=moved)
+                               moved_sectors=moved, keys=frozenset(keys))
 
 
 STAIR_SPECIALS = {7: 8, 8: 8, 100: 16, 127: 16}   # stair builders -> step height (100, 127: turbo 16)
@@ -180,7 +180,7 @@ def _boss_spots(m: MapData, g: NavGrid, pos) -> tuple[tuple[float, float], tuple
     return None
 
 
-def solve(m: MapData, start: tuple[float, float], max_depth: int = 5, verbose: bool = False) -> list[Subgoal] | None:
+def solve(m: MapData, start: tuple[float, float], max_depth: int = 7, verbose: bool = False) -> list[Subgoal] | None:
     stand, mid, _ = exit_target(m)
     exit_goal = Subgoal("exit", "exit" if m.exit_lines else "teleporter", stand, mid)
     boss = BOSS_TRIGGERS.get(m.name)
@@ -300,7 +300,8 @@ MAX_SUPPLY_DETOUR = 1500.0
 
 
 # Without a boss: shells on cheap detours, when a shotgun is carried in (E1M4 starts with 15 shells; the
-# expert ran dry by 25-35 s and died to imps, a box of shells 241 units off the first stretch).
+# expert ran dry by 25-35 s and died to imps, a box of shells 241 units off the first stretch). Health and
+# armor detours were tried on E1M5: more time in fights, earlier deaths.
 CHEAP_SUPPLIES = {2049: ("box of shells", 600.0), 2008: ("shells", 200.0)}
 
 

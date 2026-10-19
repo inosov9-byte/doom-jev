@@ -165,7 +165,8 @@ class Perception:
             if nf - cf > MAX_STEP:
                 # A lift under a high ceiling reads as a ledge, not a wall (E1M5: the lift at the top of the
                 # stairs to the teleport room; the expert slid along its face for 20 s without pressing use).
-                if i in self.lift_walls:
+                # Only when the lift is the far side: E1M2's exit lift has a switch face toward the step above.
+                if i in self.lift_walls and self.m.sector_tag[nxt] == self.m.lines[i].tag:
                     return d, self._lift_state(obs, nxt), nukage, thing
                 return d, "ledge too high to climb", nukage, thing
             if cf - nf > MAX_STEP and self._dead_end(ox + dx * (d + 12), oy + dy * (d + 12)):
