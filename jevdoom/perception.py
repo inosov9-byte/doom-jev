@@ -648,10 +648,12 @@ class Perception:
             es = self.escape(obs, bosses)
             if es:
                 parts.append(f"Escape from {name}: {es[0]:.0f} units open, {_side(es[1])}.")
-        elif len(shooters) >= 2:
+        elif len(shooters) >= 2 or any(m.name == "ShotgunGuy" and obs.dist_to(m.x, m.y) <= 300 for m in shooters):
+            # One shotgun guy close is reported too: within 300 his spread hits often (E1M3's corners).
+            n = len(shooters)
             cv = self.cover(obs, shooters, reach=320)
-            parts.append(f"Cover from {len(shooters)} shooters: {cv[0]:.0f} units, {_side(cv[1])}." if cv
-                         else f"Cover from {len(shooters)} shooters: none near.")
+            parts.append(f"Cover from {n} shooter{'s' if n > 1 else ''}: {cv[0]:.0f} units, {_side(cv[1])}." if cv
+                         else f"Cover from {n} shooter{'s' if n > 1 else ''}: none near.")
 
         rays, hazard = [], None
         for name, rel in RAYS:

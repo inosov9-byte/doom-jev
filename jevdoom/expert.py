@@ -398,7 +398,10 @@ def _decide(f: dict) -> str:
         # Two or more gunmen or imps with a line of fire: out of their sight while the shotgun reloads (with
         # bullets, whenever they hit), back out to fire when it is ready. They follow one at a time (E1M4's opening room:
         # 71 health gone in five seconds standing in the open). Moves keep facing them: no turning away.
-        if (t["kind"] not in BOSSES and f["group_cover"] is not None and len(shooters) >= 2
+        # One shotgun guy within 260 counts as a group: his three pellets do what two gunmen do (E1M3's corner at
+        # (-450, -650): one at 90-130 units took 53 health while the teacher stood to wait for the reload).
+        if (t["kind"] not in BOSSES and f["group_cover"] is not None
+                and (len(shooters) >= 2 or any(e["kind"] == "shotgun guy" and e["dist"] <= 260 for e in shooters))
                 and (f["reload"] > AIM_LEAD
                      or (f["damage"] > 0 and (f["weapon"] != "shotgun" or f["health"] < 30)))):
             move = _move_toward(*f["group_cover"])
@@ -441,6 +444,16 @@ def _decide(f: dict) -> str:
             if t["crosshair"]:
                 return "fire"
             return turn_toward(t["angle"])
+        # A shotgun guy (or two gunmen) within 260 while the shotgun reloads: back off facing them instead of
+        # standing to wait for the shot. Their spread hits about twice as often at 130 units as at 300, and the
+        # corner the player came around is behind it (E1M3's (-450, -650) corner and the shotgun guys after the
+        # last trigger: "fire" held for 0.6-0.9 s at 90-170 units, 18-53 health per wait). Aim from AIM_LEAD on.
+        close_guns = [e for e in shooters if e["kind"] in HITSCAN and e["dist"] <= 260]
+        if (t["kind"] in HITSCAN and t["dist"] <= 260 and f["reload"] > AIM_LEAD
+                and (t["kind"] == "shotgun guy" or len(close_guns) >= 2) and not edge
+                and f["rays"].get("behind", (0.0, ""))[0] > 120 and not _unsafe(f, "back")
+                and not _toward_barrel(f, "back") and not (f["blocked"] and f["last"] == "back")):
+            return "back"
         if t["crosshair"] and f["reload"] > RELOAD_DODGE and t["dist"] > 110:
             # Shotgun reloading: move instead of a wasted fire. Against a gunman a sidestep dodges
             # nothing and moves the aim off him; "fire" holds the aim and shoots the moment it is ready.
@@ -602,9 +615,10 @@ def _away_from(f: dict, angle: float, flee: bool = False) -> str | None:
     else:
         cands = ["strafe_right" if angle > 0 else "strafe_left", "back" if abs(angle) < 90 else "forward"]
     # Not toward a monster in front (E1M7's start: away from a barrel behind meant walking into a spectre).
-    # Gunmen ahead are no reason to stay by the barrel: walking toward them does not add to their fire.
-    if not flee and any(e["angle"] is not None and abs(e["angle"]) <= 45 and e["kind"] not in HITSCAN
-           and e["dist"] <= (300 if e["kind"] in MELEE else 160) for e in f["enemies"]):
+    # Nor toward a gunman within 300: closer, their spread hits more often (E1M3's corner at (-450, -650):
+    # away from a barrel behind, the reloading teacher walked up to two shotgun guys, 86 -> 15 in 0.7 s).
+    if not flee and any(e["angle"] is not None and abs(e["angle"]) <= 45
+           and e["dist"] <= (300 if e["kind"] in MELEE + HITSCAN else 160) for e in f["enemies"]):
         cands = [c for c in cands if c != "forward"] + (["strafe_left", "strafe_right"] if "forward" in cands else [])
     ray = {"back": "behind", "forward": "ahead", "strafe_left": "60 left", "strafe_right": "60 right"}
     last = f["last"] or ""
