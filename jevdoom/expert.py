@@ -11,6 +11,7 @@ open a closed door on the way > turn toward the route > get unstuck > walk forwa
 """
 from __future__ import annotations
 
+import os
 import re
 
 STEPS = (5, 15, 30, 45, 90)
@@ -45,6 +46,8 @@ BARREL_BLAST = 160             # barrel explosion radius is 128; never shoot one
 BARREL_KEEP = 135              # a barrel blast does 128 minus the box distance (axis distance less 16): keep this far under fire
 DODGE_MIN = 0.25               # seconds: a fireball arriving sooner is not dodged from a stand
 KILL_GOALS = ("baron of hell",)
+HOLD = os.environ.get("JEVDOOM_HOLD", "1") == "1"
+HOLD_HEALTH = 50               # alone, a single shooter out of sight is waited for below this health
 DEAD_DROP = "drop with no way back"
 # How far a move can carry the player, slide included (a run builds momentum that slides ~60-150 units
 # after the next command replaces it), and the drop rays it must keep clear of: a strafe goes 90
@@ -130,6 +133,8 @@ def parse_state(s: str) -> dict:
     f["on_lift"] = "Standing on a lift" in s
     m = re.search(r"Barrel (\d+) units away, ([^.]+)\.", s)
     f["barrel"] = (float(m.group(1)), _angle(m.group(2))) if m else None
+    m = re.search(r"Out of sight: (\d+) shooters? seen ([\d.]+) s ago, nearest (\d+) away, ([^.]+)\.", s)
+    f["unseen"] = (int(m.group(1)), float(m.group(2)), float(m.group(3)), _angle(m.group(4))) if m else None
     m = re.search(r"Being shot from out of view, ([^.]+)\.", s)
     if m:
         f["attacker"] = _angle(m.group(1))
@@ -441,6 +446,19 @@ def _decide(f: dict) -> str:
     # 3. shot from out of view: face the attacker if we can fight back
     if f["attacker"] is not None and has_ammo and not sprint and not wading:
         return turn_toward(f["attacker"])
+
+    # 3b. gunmen or imps just went out of sight: hold here, facing where they were, and let them come around the
+    #     corner one at a time instead of walking back into their crossfire (E1M5's west room, E1M6's red key
+    #     wave, E1M7's start: the teacher re-entered the open and died to the group).
+    u = f["unseen"]
+    if (u is not None and HOLD and has_ammo and not sprint and not f["on_nukage"] and not f["on_lift"]
+            and goal not in KILL_GOALS and (u[0] >= 2 or f["health"] < HOLD_HEALTH) and u[3] is not None):
+        if abs(u[3]) >= 30:
+            return turn_toward(u[3])
+        if not ahead[1].startswith(("door", "switch", "exit", "lift")) or ahead[0] > 2 * USE_REACH:
+            return "use"            # nothing within reach to press: a wait
+        if abs(u[3]) >= 7.5:
+            return turn_toward(u[3])
 
     # 4. supplies: ammo when out, health when low
     low_shells = f["weapon"] == "shotgun" and f["shells"] < 8      # Barons take ~15 shotgun blasts each

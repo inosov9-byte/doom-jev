@@ -68,6 +68,7 @@ class Perception:
         self.prev: Obs | None = None
         self.prev_cmd: str | None = None
         self.history: list[tuple[str, float]] = []   # (command, units moved) for recent decisions
+        self.seen: dict[int, tuple[int, float, float]] = {}   # shooter id -> (tic, x, y) last seen in the line of fire
         self.door_ceil_prev: dict[int, float] = {}   # door sector -> ceiling height at the previous description
         self.doors_seen_open: set[int] = set()
         self.live_grids: dict[int, NavGrid] = {}     # stage -> grid rebuilt from live sector heights
@@ -224,6 +225,7 @@ class Perception:
     # Gunmen cannot be dodged; in E1M4's opening room four of them took 71 health in five seconds.
     SHOOTERS = ("Zombieman", "ShotgunGuy", "DoomImp")
     SHOOTER_RANGE = 800
+    SEEN_TICS = 88                           # shooters out of sight are reported for 2.5 s
     EYE, CHEST = 41.0, 32.0                  # Doom player eye height; a monster's mid height
 
     def _live_heights(self, obs: Obs):
@@ -573,8 +575,19 @@ class Perception:
                     shooters.append(m)
                 enemies.append(f"{MONSTER_NAMES.get(m.name, m.name)} {d:.0f} away, {aim}")
             parts.append("Enemies in view: " + "; ".join(enemies) + ".")
+            for m in shooters:
+                self.seen[m.id] = (obs.tic, m.x, m.y)
         else:
             parts.append("Enemies in view: none.")
+            # Gunmen and imps that just went out of sight are still there (behind the corner the player stepped
+            # back around): where and when they were last seen.
+            alive = {m.id for m in obs.monsters}
+            self.seen = {i: v for i, v in self.seen.items() if i in alive and obs.tic - v[0] <= self.SEEN_TICS}
+            if self.seen:
+                t, x, y = min(self.seen.values(), key=lambda v: obs.dist_to(v[1], v[2]))
+                n = len(self.seen)
+                parts.append(f"Out of sight: {n} shooter{'s' if n > 1 else ''} seen {(obs.tic - max(v[0] for v in self.seen.values())) / 35:.1f} s ago, "
+                             f"nearest {obs.dist_to(x, y):.0f} away, {_side(obs.bearing_to(x, y))}.")
 
         items = sorted((p for p in obs.pickups if p.visible), key=lambda p: obs.dist_to(p.x, p.y))[:2]
         if items:
@@ -672,6 +685,7 @@ class Perception:
         self.doors_seen_open = set()
         self.lift_floor_prev = {}
         self.history = []
+        self.seen = {}
         self.stage = 0
         self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
         self._job = None
