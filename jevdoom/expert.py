@@ -441,9 +441,7 @@ def _decide(f: dict) -> str:
         return turn_toward(f["attacker"])
 
     # 4. supplies: ammo when out, health when low
-    # Not only while the shotgun is out: with no shells left the pistol is up, and E1M5 runs walked past
-    # shells 81 units away at 0 shells (pistol only, 4 health). Barons take ~15 shotgun blasts each.
-    low_shells = f["shells"] < 8
+    low_shells = f["weapon"] == "shotgun" and f["shells"] < 8      # Barons take ~15 shotgun blasts each
     # Health before ammo when low (E1M3: at 3 health the expert walked past a medikit 108 units away
     # to fetch shells). Below 60 a near medikit is worth the steps: carried health decides the next level.
     # A near item that would not be wasted is worth the steps too (E1M4: a medikit beside the start, taken
@@ -522,7 +520,9 @@ def _lift_blocked(f: dict) -> str:
     pressing use for 45 s (7 of 16 at 100 ms). Step off and back on, so its walk-over line lowers it again."""
     if not f["on_lift"]:
         return "use"
-    if f["blocked"] and f["rays"].get("behind", (0.0, ""))[0] > 60 and not _unsafe(f, "back"):
+    # Keep backing until off it: a short back step left the instant player still on the 64-unit lift.
+    if ((f["blocked"] or f["last"] == "back") and f["rays"].get("behind", (0.0, ""))[0] > 60
+            and not _unsafe(f, "back")):
         return "back"
     return "forward_short"
 
@@ -593,22 +593,6 @@ def _toward_barrel(f: dict, cmd: str) -> bool:
     return diff < 50
 
 
-def _barrel_safe(f: dict, cmd: str) -> str:
-    """Swap a move toward a near barrel for one that takes the player farther from it, if there is one
-    (a sidestep with the barrel 30 degrees ahead still closes in on it)."""
-    if not _toward_barrel(f, cmd):
-        return cmd
-    if cmd.startswith("fire_strafe_"):
-        return "fire"
-    b = f["barrel"][1]
-    ray = {"back": "behind", "strafe_left": "60 left", "strafe_right": "60 right"}
-    for a in ("back", "strafe_left", "strafe_right"):
-        if (abs((MOVE_DIR[a] - b + 180) % 360 - 180) >= 90 and f["rays"].get(ray[a], (0.0, ""))[0] > 64
-                and not _unsafe(f, a)):
-            return a
-    return cmd
-
-
 def _unsafe(f: dict, cmd: str) -> bool:
     """The move would carry the player over a drop with no way back."""
     return any(f["drops"].get(ray, 1e9) < reach for ray, reach in MOVE_REACH.get(cmd, ()))
@@ -646,7 +630,6 @@ def decide(state: str) -> str:
         # 100 ms: 60 s of left-right turns in a corner between a wall and a drop, ended as stuck).
         if f["moved"] < 5 and f["rays"].get("behind", (0.0, ""))[0] > 60 and not _unsafe(f, "back"):
             return "back"
-    cmd = _barrel_safe(f, cmd)
     if not _unsafe(f, cmd) or cmd == "forward_short" and _still(f):
         return cmd
     # E1M3's walkway is ~100 units wide between toxic pits: a 250-unit strafe or a full run off the
