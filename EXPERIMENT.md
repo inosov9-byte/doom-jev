@@ -22,7 +22,7 @@ The experiment is now **student vs teacher** on the same seeds:
 
 | Factor | Value | Where enforced |
 |---|---|---|
-| Map, difficulty | E1M1 (then E1M2), skill 3, pistol start | `compare.py --map` |
+| Map, difficulty | E1M1, E1M2: skill 3, pistol start; E1M8: skill 3, carried loadout (`--loadout`) | `compare.py --map` |
 | Game RNG | ViZDoom seed per run; same seeds for every arm | `--seeds` |
 | Clock | real time, 35 tics/s, never paused | `play.py` |
 | Perception, commands | perception v2, 20 commands, fixed macros | git commit in `summary.json` |
@@ -73,6 +73,18 @@ E1M2, held-out seeds 26-45:
 | Teacher, instant (seeds 26-35) | 6/10 before the exit-room fix, 10/10 after | 58.7 s |
 
 E1M3 zero-shot (v5, 10 seeds): all die, at 9-32% of the route; the teacher dies at 25-27%.
+
+E1M8 (boss finale), loadout `nominal` (stand-in for an E1M7 exit), timeout 240 s:
+
+| | Clears | Fastest |
+|---|---|---|
+| Teacher, instant (seeds 1-16) | ~70% | ~120 s |
+| Teacher, 100 ms decision lag (seeds 1-16) | ~45% | — |
+| Jev round 1 (teacher data only, seeds 1-10) | 0/10, stuck at the lift | — |
+| Jev round 3 (2 DAgger rounds, seeds 51-70) | 7/20 | 160.5 s |
+| Jev round 4 (3 DAgger rounds, unseen seeds 151-170) | 8/20 | 133.9 s |
+
+Finding: tactics that need instant reactions do not transfer to a ~90 ms student. 50 ms of added lag took the original E1M8 teacher from ~70% to 0%; the teacher was rebuilt until it cleared at 100 ms lag, and the student then matched it.
 
 ## Next
 
