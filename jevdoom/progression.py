@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import os
 from collections import deque
 from dataclasses import dataclass
 
@@ -41,6 +42,7 @@ class Subgoal:
     target: tuple[float, float]       # what to face (switch midpoint, key position)
     tag: int = 0
     color: str = ""
+    need: str = ""                    # optional campaign resource stage (with_resource_detours): "<kind>#<n>"
 
 
 def world(m: MapData, keys: frozenset, opened: frozenset, strict_lifts: bool = False) -> MapData:
@@ -309,12 +311,17 @@ CHEAP_SUPPLIES = {2049: ("box of shells", 600.0)}
 
 
 def with_supply_detours(m: MapData, goals: list[Subgoal], start: tuple[float, float],
-                        max_detour: float = MAX_SUPPLY_DETOUR, held: set[str] = frozenset()) -> list[Subgoal]:
+                        max_detour: float = MAX_SUPPLY_DETOUR, held: set[str] = frozenset(),
+                        resources: bool = False) -> list[Subgoal]:
     """Before the first kill subgoal, visit every supply whose detour from that stage's route is
-    within max_detour, in nearest-neighbour order. The visit is done on arrival (perception.py)."""
+    within max_detour, in nearest-neighbour order. The visit is done on arrival (perception.py).
+    Without a kill subgoal: boxes of shells on cheap detours, or with resources=True (a campaign map
+    another map follows) the full resource plan (with_resource_detours)."""
     from .wadmap import path_length
     k = next((i for i, g in enumerate(goals) if g.kind == "kill"), None)
     if k is None:
+        if resources:
+            return with_resource_detours(m, goals, start, held=held)
         return _cheap_supplies(m, goals, start) if "shotgun" in held else goals
     gr = stage_grids(m, goals, strict_lifts=True, avoid_barrels=False)[k]
     here = goals[k - 1].pos if k else start
@@ -375,6 +382,201 @@ def _cheap_supplies(m: MapData, goals: list[Subgoal], start: tuple[float, float]
             cur = nxt.pos
         out.append(g)
     return out
+
+
+# Campaign resource plan: what the next map needs, worth a detour in proportion to its value. thing type ->
+# (label, longest detour in route units, need). ~280 units/s: 2000 units is ~7 s of running. Medikits and
+# Medikits and stimpacks are left to needs.py: whether one is needed is known only once the damage is taken
+# (a planned medikit stage was judged at the stage start, at full health, and skipped). Single shells, clips too.
+RESOURCES = {2013: ("soulsphere", 2000.0, "health"), 2019: ("blue armor", 1800.0, "armor200"),
+             2018: ("green armor", 1200.0, "armor100"), 2002: ("chaingun", 1500.0, "weapon"),
+             2003: ("rocket launcher", 1200.0, "weapon"), 8: ("backpack", 1200.0, "ammo"),
+             2049: ("box of shells", 600.0, "shells"), 2048: ("box of bullets", 400.0, "bullets")}
+ENABLED = {2013, 2019, 2002, 2003, 8}        # worth a key or a trigger on the way (a door opened for them)
+ENABLER_COST = 300.0                         # an extra key or trigger stage costs this much on top of the walk
+WEAPON_THING = {2001: "shotgun", 2002: "chaingun", 2003: "rocket launcher"}
+RESOURCE_CACHE = os.environ.get("JEV_RESOURCE_CACHE", r"C:\tmp\jev-doom\cache\resources")
+RESOURCE_VERSION = 3
+
+
+def _on_skill(t) -> bool:
+    return len(t) < 5 or bool(t[4] & SKILL_FLAG[3] and not t[4] & 16)
+
+
+def with_resource_detours(m: MapData, goals: list[Subgoal], start: tuple[float, float],
+                          held: set[str] = frozenset()) -> list[Subgoal]:
+    """Optional 'item' stages for what the next map needs (RESOURCES): each item goes before the stage it is
+    cheapest from (armor: the earliest stage within its limit, so later fights are fought with it on),
+    with at most one key or trigger stage to open its room for the valuable ones (ENABLED). Items beside
+    a ledge, on a damaging floor, or whose detour crosses one are left out. Stages carry need='<kind>#<n>';
+    needs.py skips a stage (and its enabler) when it is no longer needed at play time. Cached on disk."""
+    import json
+    held = set(held) | {g.label for g in goals if g.kind == "item" and g.label in WEAPON_THING.values()}
+    key = f"{m.name}-{'-'.join(sorted(w.replace(' ', '') for w in held)) or 'none'}-v{RESOURCE_VERSION}"
+    path = os.path.join(RESOURCE_CACHE, key + ".json")
+    if os.path.exists(path):
+        try:
+            return [Subgoal(**{**g, "pos": tuple(g["pos"]), "target": tuple(g["target"])}) for g in json.load(open(path))]
+        except (OSError, ValueError):
+            pass
+    out = _plan_resources(m, goals, start, held)
+    os.makedirs(RESOURCE_CACHE, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    json.dump([dataclasses.asdict(g) for g in out], open(tmp, "w"))
+    os.replace(tmp, path)
+    return out
+
+
+def _plan_resources(m: MapData, goals: list[Subgoal], start: tuple[float, float], held: set[str]) -> list[Subgoal]:
+    from .wadmap import DAMAGE_SECTORS, path_length
+    states, keys, opened = [], frozenset(), frozenset()
+    for g in goals:
+        states.append((keys, opened))
+        if g.kind == "key":
+            keys = keys | {g.color}
+        elif g.kind in ("switch", "walk", "shoot"):
+            opened = opened | {g.tag}
+    cache: dict = {}
+
+    def grid(k, o):
+        if (k, o) not in cache:
+            cache[(k, o)] = NavGrid(world(m, k, o, strict_lifts=True), avoid_barrels=False)
+        return cache[(k, o)]
+
+    starts = [start] + [g.pos for g in goals[:-1]]
+    grids = [grid(*s) for s in states]
+    bases = [gr.plan(a, g.pos) for gr, a, g in zip(grids, starts, goals)]
+    reach = [gr.reachable(a) for gr, a in zip(grids, starts)]
+    taken = {g.pos for g in goals if g.kind == "item"}
+    keys_avail = [(KEY_THINGS[t[3]], (float(t[0]), float(t[1]))) for t in m.things if t[3] in KEY_THINGS]
+    triggers: dict[int, list] = {}
+    for l in m.lines:
+        if l.tag and l.special and l.special not in NOT_MOVERS:
+            triggers.setdefault(l.tag, []).append(l)
+    enablers: dict[int, list] = {}           # stage -> [(chain of subgoals, grid after it, reach from its end)]
+
+    def openers(gr, k, o, rmask):
+        """(subgoal, keys, opened) for each key or trigger reachable in rmask."""
+        out = []
+        for color, kpos in keys_avail:
+            if color not in k:
+                spot = kpos if rmask[gr.to_cell(*kpos)] else _pickup_spot(gr, rmask, kpos)
+                if spot:
+                    out.append((Subgoal("key", KEY_NAMES[color], spot, kpos, color=color), k | {color}, o))
+        for tag, lines in triggers.items():
+            if tag in o:
+                continue
+            for l in lines:
+                kind = {"S": "switch", "W": "walk", "G": "shoot"}[how(l.special)]
+                pts, mid_l = _stand_points(l, 40.0 if kind != "shoot" else 200.0)
+                p = next((p for p in pts if gr.sector_at(*p) >= 0 and rmask[gr.to_cell(*p)]), None)
+                if p is not None:
+                    label = {"switch": "switch", "walk": "trigger line", "shoot": "switch to shoot"}[kind]
+                    out.append((Subgoal(kind, label, p, mid_l, tag=tag), k, o | {tag}))
+                    break
+        return out
+
+    def stage_enablers(i):
+        """One opener, or two when the second one's key or line only comes within reach after the first
+        (E1M3: a switch opens the way to a walk-over line that lowers the lift up to the soulsphere)."""
+        if i not in enablers:
+            out = []
+            first = openers(grids[i], *states[i], reach[i])
+            seen = {(sg.kind, sg.color, sg.tag) for sg, _, _ in first}
+            for sg, k2, o2 in first:
+                g2 = grid(k2, o2)
+                r2 = g2.reachable(sg.pos)
+                out.append(([(sg, grids[i])], g2, r2))
+                for sg2, k3, o3 in openers(g2, k2, o2, r2):
+                    if (sg2.kind, sg2.color, sg2.tag) in seen:
+                        continue
+                    g3 = grid(k3, o3)
+                    out.append(([(sg, grids[i]), (sg2, g2)], g3, g3.reachable(sg2.pos)))
+            enablers[i] = out
+        return enablers[i]
+
+    def hazard(gr, *paths):
+        secs = {gr.sector_at(*q) for p in paths for q in p} - {-1}
+        return any(int(gr.m.special[s]) in DAMAGE_SECTORS for s in secs)
+
+    picks = []                                # (stage, extra, [subgoals]) per item
+    for t in m.things:
+        spec = RESOURCES.get(t[3])
+        pos = (float(t[0]), float(t[1]))
+        if not spec or not _on_skill(t) or pos in taken:
+            continue
+        label, limit, need = spec
+        if ((t[3] in WEAPON_THING and WEAPON_THING[t[3]] in held) or (t[3] == 2049 and "shotgun" not in held)
+                or (t[3] == 2048 and "chaingun" not in held)):
+            continue
+        r, c = grids[-1].to_cell(*pos)
+        s = grids[-1].sector_at(*pos)
+        if s < 0 or int(m.special[s]) in DAMAGE_SECTORS or grids[-1].near_drop[max(r - 2, 0):r + 3, max(c - 2, 0):c + 3].any():
+            continue
+        cands = []
+        for i, (gr, a, g, base) in enumerate(zip(grids, starts, goals, bases)):
+            if not base:
+                continue
+            bl = path_length(base)
+            if reach[i][gr.to_cell(*pos)]:
+                if math.dist(a, pos) + math.dist(pos, g.pos) - bl > limit:
+                    continue
+                p1, p2 = gr.plan(a, pos), gr.plan(pos, g.pos)
+                if p1 and p2 and not hazard(gr, p1, p2):
+                    cands.append((i, path_length(p1) + path_length(p2) - bl, []))
+            elif t[3] in ENABLED:
+                for chain, g2, r2 in stage_enablers(i):
+                    pts = [a] + [sg.pos for sg, _ in chain] + [pos, g.pos]
+                    extra_cost = ENABLER_COST * len(chain)
+                    if (not r2[g2.to_cell(*pos)]
+                            or sum(math.dist(pts[j], pts[j + 1]) for j in range(len(pts) - 1)) - bl + extra_cost > limit):
+                        continue
+                    legs = [gx.plan(pts[j], pts[j + 1]) for j, (_, gx) in enumerate(chain)]
+                    legs += [g2.plan(chain[-1][0].pos, pos), g2.plan(pos, g.pos)]
+                    if all(legs) and not hazard(g2, *legs):
+                        cands.append((i, sum(map(path_length, legs)) - bl + extra_cost, [sg for sg, _ in chain]))
+        cands = [c for c in cands if c[1] <= limit]
+        if not cands:
+            continue
+        # Armor: the earliest stage within the limit (fights after it are fought with armor on); else cheapest.
+        best = min(cands, key=lambda c: (c[0], c[1])) if need.startswith("armor") else min(cands, key=lambda c: c[1])
+        picks.append((best[0], best[1], best[2] + [Subgoal("item", label, pos, pos)], need))
+    # one enabler per (stage, key/tag): two items behind the same door share it
+    per_stage: dict[int, list] = {}
+    for n, (i, extra, sgs, need) in enumerate(sorted(picks, key=lambda p: (p[0], p[1]))):
+        per_stage.setdefault(i, []).append((sgs, f"{need}#{n}"))
+    out = []
+    for i, (g, a) in enumerate(zip(goals, starts)):
+        todo, cur, done_en = per_stage.get(i, []), a, set()
+        while todo:                           # nearest first, by the first subgoal of each pick
+            nxt = min(todo, key=lambda p: math.dist(cur, p[0][0].pos))
+            todo.remove(nxt)
+            for sg in nxt[0]:
+                ek = (sg.kind, sg.color, sg.tag)
+                if sg.kind != "item" and ek in done_en:
+                    continue
+                done_en.add(ek)
+                out.append(dataclasses.replace(sg, need=nxt[1]))
+                cur = sg.pos
+        out.append(g)
+    return _verified(m, out, start, goals)
+
+
+def _verified(m: MapData, out: list[Subgoal], start, goals: list[Subgoal]) -> list[Subgoal]:
+    """Every stage of the new plan still has a route (an enabler can raise a floor across a later route);
+    otherwise drop the enabler-gated picks, then everything."""
+    def ok(gl):
+        here = start
+        for g, gr in zip(gl, stage_grids(m, gl, strict_lifts=True, avoid_barrels=False)):
+            if not gr.plan(here, g.pos):
+                return False
+            here = g.pos
+        return True
+    if ok(out):
+        return out
+    gated = {g.need for g in out if g.need and g.kind != "item"}
+    plain = [g for g in out if g.need not in gated]
+    return plain if gated and ok(plain) else goals
 
 
 def trigger_route(g: NavGrid, a: tuple[float, float], b: tuple[float, float], max_expand: int = 200_000):
