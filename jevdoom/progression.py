@@ -352,6 +352,9 @@ def _cheap_supplies(m: MapData, goals: list[Subgoal], start: tuple[float, float]
         for i, (gr, a, g, base) in enumerate(zip(grids, starts, goals, bases)):
             if not base or math.dist(a, pos) + math.dist(pos, g.pos) - path_length(base) > limit:
                 continue                  # straight-line bound first: A* per item and stage is slow
+            r, c = gr.to_cell(*pos)       # not beside a ledge (E1M3: shells on the toxic walkway among barrels;
+            if gr.near_drop[max(r - 2, 0):r + 3, max(c - 2, 0):c + 3].any():    # two seeds of four died there)
+                continue
             p1, p2 = gr.plan(a, pos), gr.plan(pos, g.pos)
             if p1 and p2:
                 extra = path_length(p1) + path_length(p2) - path_length(base)
