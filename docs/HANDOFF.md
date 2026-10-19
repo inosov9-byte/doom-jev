@@ -44,11 +44,10 @@ C:\tmp\jev-doom\venv-rocm\Scripts\python.exe -m jevdoom.train_fast --data <jsonl
     --progress "$env:OneDrive\Transfer\doom-jev\pc-progress\training-<run>.md"
 python -m jevdoom.compare --arms rules rules-lag-100 --map E1M8 --seeds 1 2 3 4 5 6 7 8 --jobs 8 --loadout nominal --timeout 240 --no-video --out <dir>
 python -m jevdoom.campaign --arm rules --maps E1M1 E1M2 E1M3 E1M4 E1M5 E1M6 E1M7 E1M8 --seed 1 --timeout 300 --out <dir>
-python -m jevdoom.replay runs\<eval>\<run> --out C:	mp\jev-doomudio [--render]   # exact tic replay + game audio -> <run>-sound.mp4
+python -m jevdoom.replay runs\<eval>\<run> --out C:\tmp\jev-doom\audio [--render]   # exact tic replay + game audio -> <run>-sound.mp4
 ```
 
-Recorded runs replay exactly (map, seed, skill, loadout, command per logged tic; checked per decision against the log). `replay.py` adds game sound to an old silent run.mp4; `play.py --record-video --sound` records sound live (no timing cost measured). Share videos with sound since 2026-10-19: `share
-osov.ai\` (E1M8 133.9 s, E1M2 71.7 s).
+Recorded runs replay exactly (map, seed, skill, loadout, command per logged tic; checked per decision against the log). `replay.py` adds game sound to an old silent run.mp4; `play.py --record-video --sound` records sound live (no timing cost measured). Share videos with sound since 2026-10-19: `share\nosov.ai\` (E1M8 133.9 s, E1M2 71.7 s).
 
 Teacher games run in parallel with `--jobs` (8-10 on 16 cores; more distorts real-time timing). Stop the fast server before training (it holds ~9 GB; training peaks at 12.5 GB).
 
