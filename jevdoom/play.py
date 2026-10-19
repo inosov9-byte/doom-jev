@@ -30,6 +30,7 @@ from .env import blank_action, make_game, observe
 from .executor import Executor
 from .jev import LOCAL_URL
 from .loadout import apply as apply_loadout, from_obs, load as load_loadout
+from .needs import Needs
 from .perception import Perception
 from .progression import Subgoal, load_or_solve, stage_grids, with_supply_detours, with_weapon_detours
 from .wadmap import NavGrid, exit_target, load_map, path_length
@@ -173,12 +174,14 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
         skill: int = 3, local_url: str = LOCAL_URL, timeout: int = 300, window: bool = False,
         record_video: bool = False, runs_dir: str = "runs", compass: bool = True, dry_run: bool = False,
         engine: Engine | None = None, stepped: bool = False, quiet: bool = False, stuck_s: float = 45.0,
-        loadout: dict | None = None, sound: bool = False) -> dict:
+        loadout: dict | None = None, sound: bool = False, needs: bool = True, carry: bool = False) -> dict:
     """sound=True (with record_video): capture game audio through ViZDoom's audio buffer and mux it
     into run.mp4 (AAC). The game runs in sync mode either way, so game behaviour is unchanged.
     stepped=True: the game waits for every decision (no real time, no worker thread). For
     developing the rules expert and recording expert trajectories; not used for the comparison.
-    loadout: the state carried in from the previous level (loadout.py); None = pistol start."""
+    loadout: the state carried in from the previous level (loadout.py); None = pistol start.
+    needs: temporary supply subgoals when health or ammo run low (needs.py); carry: a later map follows
+    (campaign), so the exit stage also tops up health, armor and ammo."""
     engine = engine or make_engine(arm, local_url=local_url, dry_run=dry_run, seed=seed or 0)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = Path(runs_dir) / (f"{stamp}-{arm}" + (f"-s{seed}" if seed is not None else ""))
@@ -201,7 +204,8 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
         stage_routes.append(r)
         stage_len.append(path_length(r or [here, gl.pos]))
         here = gl.pos
-    perc = Perception(grid, compass=compass, goals=goals, stage_grids=grids, stage_routes=stage_routes)
+    nd = Needs(carry=carry) if needs and compass else None
+    perc = Perception(grid, compass=compass, goals=goals, stage_grids=grids, stage_routes=stage_routes, needs=nd)
     total_route = sum(stage_len)
 
     sound = sound and record_video
@@ -290,7 +294,7 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                 log.write(json.dumps(rec) + "\n")
             g.make_action(exe.step(obs), 1)
             tic += 1
-            if perc.route:
+            if perc.route and not (nd and nd.goal):     # a supply detour's route is not the stage route
                 left = (math.dist((obs.x, obs.y), perc.route[perc.idx]) + path_length(perc.route[perc.idx:])
                         + sum(stage_len[perc.stage + 1:]))
                 best_left = min(best_left, left)
@@ -339,7 +343,7 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                    "kills": obs.kills if obs else 0, "damage_taken": round(obs.damage_taken) if obs else 0,
                    "damage_dealt": round(obs.damage_dealt) if obs else 0, "hits": obs.hits if obs else 0,
                    "health_end": round(obs.health) if obs else None,
-                   "start_loadout": loadout, "end_loadout": from_obs(obs) if obs else None,
+                   "start_loadout": loadout, "needs": [list(e) for e in nd.log] if nd else None, "carry": carry, "end_loadout": from_obs(obs) if obs else None,
                    "decisions": n_dec, "errors": n_err, "decisions_per_s": round(n_dec / max(wall, 1e-9), 2),
                    "latency_median": round(statistics.median(lat), 3) if lat else None,
                    "latency_p90": round(lat_sorted[int(0.9 * (len(lat_sorted) - 1))], 3) if lat else None,
@@ -369,12 +373,14 @@ def main(argv=None):
     ap.add_argument("--no-compass", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="mock engine with the arm's latency profile; free")
     ap.add_argument("--stepped", action="store_true", help="game waits for each decision (expert development)")
+    ap.add_argument("--no-needs", action="store_true", help="no supply subgoals (needs.py)")
+    ap.add_argument("--carry", action="store_true", help="a later map follows: top up before the exit")
     ap.add_argument("--loadout", help="carried state: pistol (default), nominal, or a loadout/summary.json file")
     args = ap.parse_args(argv)
     s = run(args.arm, args.seed, wad=args.wad, map_name=args.map, skill=args.skill, local_url=args.local_url,
             timeout=args.timeout, window=args.window, record_video=args.record_video, runs_dir=args.runs,
             compass=not args.no_compass, dry_run=args.dry_run, stepped=args.stepped,
-            loadout=load_loadout(args.loadout, args.map), sound=args.sound)
+            loadout=load_loadout(args.loadout, args.map), sound=args.sound, needs=not args.no_needs, carry=args.carry)
     print(json.dumps(s, indent=2))
 
 

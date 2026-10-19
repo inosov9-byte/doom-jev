@@ -31,7 +31,7 @@ DEAD_DROP = "drop with no way back"
 
 class Perception:
     def __init__(self, grid: NavGrid, compass: bool = True, goals: list[Subgoal] | None = None,
-                 stage_grids: list[NavGrid] | None = None, stage_routes: list | None = None):
+                 stage_grids: list[NavGrid] | None = None, stage_routes: list | None = None, needs=None):
         """goals/stage_grids: level progression (progression.py). Without them the only goal is the
         exit and the text is exactly the single-level E1M1 text."""
         self.grid = grid
@@ -50,6 +50,7 @@ class Perception:
         self.goals = goals or [Subgoal("exit", "exit", self.stand, self.exit_mid)]
         self.stage_grids = stage_grids or [grid] * len(self.goals)
         self.stage = 0
+        self.needs = needs                             # needs.Needs: temporary supply subgoals (or None)
         self.map_keys = {KEY_THINGS[t[3]] for t in self.m.things if t[3] in KEY_THINGS}
         S = {sp for sp, how in {**DOOR_TRIGGERS, **LIFT_TRIGGERS}.items() if how == "S"}
         G = {sp for sp, how in DOOR_TRIGGERS.items() if how == "G"}
@@ -335,6 +336,8 @@ class Perception:
 
     @property
     def goal(self) -> Subgoal:
+        if self.needs is not None and self.needs.goal is not None:
+            return self.needs.goal
         return self.goals[min(self.stage, len(self.goals) - 1)]
 
     def _advance(self, obs: Obs) -> None:
@@ -528,7 +531,8 @@ class Perception:
     def describe(self, obs: Obs, last_cmd: str | None = None, health_override: float | None = None) -> str:
         hp = obs.health if health_override is None else health_override
         weapon = WEAPON_NAMES.get(obs.weapon, "fist")
-        self._advance(obs)
+        if self.needs is None or not self.needs.step(self, obs):
+            self._advance(obs)
         parts = [f"Health {hp:.0f}, armor {obs.armor:.0f}. Weapon: {weapon}; "
                  f"{obs.bullets:.0f} bullets, {obs.shells:.0f} shells"
                  + (f", {obs.rockets:.0f} rockets." if obs.rockets > 0 else ".")]
