@@ -81,6 +81,7 @@ class Obs:
     heights: dict[int, tuple[float, float]] = field(default_factory=dict)  # live floor/ceiling per sector
     keys_present: set[str] = field(default_factory=set)   # key colours still lying in the map
     screen: np.ndarray | None = None
+    audio: np.ndarray | None = None     # the last tic's game audio when make_game(audio_rate=...) is on
 
     def bearing_to(self, tx: float, ty: float) -> float:
         """Signed degrees from view direction to target. Positive = target is to the left."""
@@ -93,7 +94,9 @@ class Obs:
 
 def make_game(wad: str, map_name: str = "E1M1", skill: int = 3, visible: bool = True,
               resolution: str = "RES_640X480", cheats: bool = False, timeout_s: int = 900,
-              sound: bool = False, seed: int | None = None) -> vzd.DoomGame:
+              sound: bool = False, seed: int | None = None, audio_rate: int | None = None) -> vzd.DoomGame:
+    """audio_rate: capture game audio (44100, 22050 or 11025 Hz) into state.audio_buffer, one tic per
+    state (rate/35 stereo int16 samples). Off by default; the game simulation is unchanged."""
     g = vzd.DoomGame()
     g.set_doom_game_path(wad)
     g.set_doom_map(map_name)
@@ -112,6 +115,10 @@ def make_game(wad: str, map_name: str = "E1M1", skill: int = 3, visible: bool = 
     g.set_available_game_variables(VARS)
     g.set_episode_timeout(timeout_s * 35)
     g.set_sound_enabled(sound)
+    if audio_rate:
+        g.set_audio_buffer_enabled(True)
+        g.set_audio_sampling_rate(getattr(vzd.SamplingRate, f"SR_{audio_rate}"))
+        g.set_audio_buffer_size(1)
     if cheats:
         g.add_game_args("+sv_cheats 1")
     if seed is not None:
@@ -128,7 +135,8 @@ def observe(g: vzd.DoomGame, tic: int) -> Obs | None:
     obs = Obs(tic=tic, x=v[0], y=v[1], angle=v[3], health=v[4], armor=v[5], dead=bool(v[6]),
               weapon=int(v[7]), bullets=v[8], shells=v[9], has_shotgun=bool(v[11]),
               kills=int(v[12]), damage_taken=v[13], rockets=v[14], has_chaingun=bool(v[15]),
-              has_launcher=bool(v[16]), damage_dealt=v[17], hits=int(v[18]), screen=s.screen_buffer)
+              has_launcher=bool(v[16]), damage_dealt=v[17], hits=int(v[18]), screen=s.screen_buffer,
+              audio=s.audio_buffer)
     visible = {l.object_id for l in s.labels}
     for o in s.objects:
         if o.category == "Self":
