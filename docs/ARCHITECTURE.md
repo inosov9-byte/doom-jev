@@ -1,6 +1,8 @@
 # What it took: Jev plays DOOM
 
-How a text classifier ended up playing DOOM in real time, what the system looks like, and what broke on the way. Part 1 (2026-10-17) ran on a Ryzen AI 9 HX 375 laptop (Radeon 890M iGPU, 32 GB); no language model finished E1M1 there. Part 2 (2026-10-18, [below](#part-2-rtx-3090-the-student-clears-e1m1)) moved to an RTX 3090 PC, where a local 4B student clears E1M1 on 18 of 20 held-out seeds.
+How a text classifier ended up playing DOOM in real time, what the system looks like, and what broke on the way. Part 1 (2026-10-17) ran on a Ryzen AI 9 HX 375 laptop (Radeon 890M iGPU, 32 GB); no language model finished E1M1 there. Part 2 (2026-10-18, [below](#part-2-rtx-3090-the-student-clears-e1m1)) moved to an RTX 3090 PC, where a local 4B student reached its teacher's level on E1M1 and E1M2. Part 3 (2026-10-19, [below](#part-3-e1m8-the-teacher-at-the-students-speed)) took it to E1M8, the episode finale, and started the end-to-end campaign.
+
+Each part describes the system as it was at the time. The current system is in the [README](../README.md).
 
 ## The starting point
 
@@ -18,7 +20,7 @@ Consequences that shaped everything:
 - Jev reads text. Something has to turn the game into text.
 - Cost per decision is one prompt pass. Prompt length is latency.
 
-## System
+## System (part 1, laptop)
 
 ```
                  ┌──────────── offline ─────────────┐
@@ -46,7 +48,7 @@ Consequences that shaped everything:
 | `play.py` | real-time loop; a worker thread asks the engine while the game keeps running | no |
 | `expert.py` | rule-based player reading the same text; teacher and reference arm | yes, only in its own arm and for labels |
 
-## The command set, and why it is 20
+## The command set, and why it is 20 (26 since part 2)
 
 | Version | Commands | What forced the change |
 |---|---|---|
@@ -259,16 +261,73 @@ A teacher survey of E1M3-E1M9 showed the planner, not the fighting, blocking mos
 | Level | Planner | Teacher (seeds 1-5) | Blocker |
 |---|---|---|---|
 | E1M3 | solved | dies at ~26% | drops into a dead-end damaging pit; no route back out |
-| E1M4, E1M7 | no route | — | not investigated yet |
+| E1M4, E1M7 | no route (solved in part 3) | — | |
 | E1M5 | solved | dies at ~15% | shotgun-guy ambush, pistol only |
 | E1M6 | solved | dies at ~28% | fights beside nukage |
-| E1M8 | no exit line | — | boss level: needs "kill target" subgoals |
+| E1M8 | no exit line (part 3 adds "kill target" subgoals) | — | boss level |
 | E1M9 | solved | dies at ~35% | not investigated yet |
 
 E1M3 zero-shot (v5 student, never trained on it, 10 seeds): dies at 9-32% of the route (median ~17%), against the teacher's 25-27%.
 
+## Part 3: E1M8, the teacher at the student's speed
+
+The goal changed from mastering single levels to one model playing E1M1 to E1M8 in one run. E1M8 ("Phobos Anomaly", two Barons of Hell, 1,000 HP each) went first because it is the hardest map of the episode.
+
+### Continuity between maps
+
+`loadout.py` reads health, armor, weapons and ammo at a map's exit and applies them at the next map's start through console commands (keys do not carry, as in Doom). `campaign.py` chains maps and stops at the first map without an exit. Until the teacher's chain reaches E1M8, E1M8 starts from `nominal`: shotgun, chaingun, 100 bullets, 30 shells, 100 health.
+
+### The planner on every map
+
+| Addition | Why |
+|---|---|
+| "Kill target" subgoals and a stand-spot route to them | E1M8 has no exit line until both Barons die; aiming the A* at an unreachable alcove froze perception for 2 s per decision |
+| Supply detours (shells, armor, medikit, soulsphere) before the first boss | the boss fight needs more than the 30 starting shells |
+| Lift state from the floor height: "lift (raised)" / "lift (lowering)" | the teacher's history-based lift rule was unlearnable from a single state |
+| Floor movers at their end height, per-tag trigger lists, teleport lines | routes on E1M4 and E1M7 |
+
+### Real-time budget
+
+The teacher must decide in about 0 ms, otherwise lagged-teacher data is wrong. Perception had grown to 0.7 s on some decisions (A* every decision, NavGrid rebuilt on every live map change). Fixes: A* in a background thread with a 35-tic replan throttle, stage routes precomputed before the game, map geometry cached per map (3.2 s to 0.07 s per rebuild). Teacher games run 8-10 in parallel on 16 cores; more distorts the real-time clock.
+
+The student: one CUDA graph per padded prompt length (256-576 tokens) took a decision from 114 to 87 ms with identical choices. Caching the fixed prompt prefix gave nothing; the 4B forward pass is compute-bound at ~400 tokens.
+
+### The finding: tactics must survive the delay
+
+| E1M8 teacher | Instant | 50 ms delay | 100 ms delay |
+|---|---|---|---|
+| Original | ~70% | 0% | — |
+| Rebuilt | ~70% | — | ~45% |
+
+The original teacher turned and fired the moment a Baron entered the crosshair and dodged a fireball when it came close. With 50 ms of delay both arrive late: the turn ends past the target, the dodge after the hit. The student, at ~90 ms, cannot learn from a teacher that only works at 0 ms. Changes that made the teacher work at 100 ms:
+
+| Change | Mechanism |
+|---|---|
+| Shotgun readiness in the text: "Shotgun ready." / "reloading, ready in 0.6 s" | the shotgun fires once per 37 tics; the teacher fires only when ready and dodges during the reload |
+| Aim lead 0.35 s | stop dodging and aim before the shotgun is ready, so the shot leaves on target |
+| Baron distance band 330-520 units | close enough to hit with most pellets, far enough to sidestep fireballs |
+| Escape scored by openness | the nearest gap was often a dead-end star tip |
+| "Fireball incoming in 0.6 s, sidestep left" from projectile velocities | dodge before arrival, with time to spare at 100 ms |
+| Line of fire | enemies behind other monsters or pillars read "out of the line of fire" |
+| Chaingun-at-range rule removed | standing still to spray at range got the player killed |
+| Damage dealt counts as progress | the stuck timer ended long boss fights |
+
+### Student rounds on E1M8
+
+| Round | Data | E1M8 clears |
+|---|---|---|
+| a | teacher and lagged-teacher games | 0/10, stuck at the lift |
+| b | + DAgger round 1 | 0/10, reaches the Barons |
+| c | + DAgger round 2, relabelled by the rebuilt teacher | 2/10 (seeds 1-10), 7/20 (seeds 51-70) |
+| d | + DAgger round 3 | **8/20 on unseen seeds 151-170**, fastest 133.9 s, 94.4% agreement |
+
+Each round trains from the previous adapter (`--init-adapter`), about 1 h on the 3090. Model d still clears E1M1 on 10/10 seeds.
+
+At 94% agreement model d still loses 12 of 20 runs: agreement on teacher-visited states is a weak proxy, and clears are the measure.
+
 ### Open questions
 
-- Transfer, properly: train on the levels the teacher clears and keep one level out of training entirely.
-- Speed: the student makes ~4.5 decisions per second against the teacher's ~7.5 and is 10-15 s slower per clear; the forward pass has a ~60 ms floor.
+- E1M3-E1M7 fights at 100 ms delay, then joint training on every map and a full campaign run by the student.
+- Weapon choice is still a fixed rule; across eight maps shell economy matters, so switching should become a Jev command.
+- Speed below ~85 ms needs a shorter prompt or a smaller model.
 - Without the route compass the model would need memory; a separate experiment.
