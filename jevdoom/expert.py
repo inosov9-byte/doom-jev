@@ -32,6 +32,7 @@ HITSCAN_ENGAGE = 500
 IMP_ENGAGE = 400
 SHOOTERS = HITSCAN + ("imp",)
 GROUP_COVER_NEAR = 200
+COVER_NEAR_ONE = 176           # one gunman: cover worth it only if reached well within a shotgun reload
 EDGE = 120                     # a drop with no way back this close: no dodging, no long-range fights
 GROUP_ENGAGE = 650
 MELEE = ("demon", "spectre")   # bite only: keep them from reaching the player
@@ -112,7 +113,7 @@ def parse_state(s: str) -> dict:
     f["escape"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     m = re.search(r"Cover from [a-z ]+: (\d+) units, ([^.]+)\.", s)
     f["cover"] = (float(m.group(1)), _angle(m.group(2))) if m else None
-    m = re.search(r"Cover from \d+ shooters: (\d+) units, ([^.]+)\.", s)
+    m = re.search(r"Cover from \d+ shooters?: (\d+) units, ([^.]+)\.", s)
     f["group_cover"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     f["goal"] = "exit"
     m = re.search(r"Route to ([a-z ]+): ([a-z ]+?) (\d+) away, ([^.]+)\.", s)
@@ -217,7 +218,12 @@ def _decide(f: dict) -> str:
         return "use"
     if goal == "switch" and ahead[1] == "switch" and ahead[0] <= USE_REACH:
         return "use"
-    if f["exit_near"] is not None and goal not in KILL_GOALS:     # a kill target is fought, not walked onto
+    # A key, item or trigger line with a monster close by: fight first (E1M8 seed 3 at 100 ms: a demon 47 units
+    # away in the crosshair, shotgun ready, and the expert pushed toward a box of shells behind it for 7 s,
+    # 183 -> 21 health). The goal is still there afterwards.
+    walk_on = goal not in ("exit", "switch", "switch to shoot")
+    guarded = walk_on and has_ammo and any(e["angle"] is not None and e["dist"] <= 200 for e in f["enemies"])
+    if f["exit_near"] is not None and goal not in KILL_GOALS and not guarded:     # a kill target is fought, not walked onto
         d, a = f["exit_near"]
         if a is not None and abs(a) >= (2.5 if goal == "switch to shoot" else 7.5):
             return turn_toward(a)
@@ -236,7 +242,11 @@ def _decide(f: dict) -> str:
     #     Not at the edge of a drop with no way back: a fireball costs 3-24 health, the pit the whole run
     #     (E1M3's walkway: dodges at 100 ms lag carried the expert over the edge on most seeds).
     edge = min(f["drops"].values(), default=1e9) < EDGE
-    if f["incoming"] is not None and not edge and _dodge_fireball(f):
+    # Wading through nukage: every second there costs ~4 health, and dodges, retreats and aiming turns kept
+    # the late expert in E1M5's start pool for 15-20 s (37-49 health from the floor alone). Shoot only what
+    # needs no more than one small turn while the shotgun is ready; otherwise keep walking the route out.
+    wading = f["on_nukage"] and has_ammo and goal not in KILL_GOALS and not any(e["kind"] in BOSSES for e in f["enemies"])
+    if f["incoming"] is not None and not edge and not wading and _dodge_fireball(f):
         side = f["incoming"][1]
         other = "right" if side == "left" else "left"
         last = f["last"] or ""
@@ -250,8 +260,12 @@ def _decide(f: dict) -> str:
     #     barrels beside the expert, 68 health gone at once). A ready shotgun fights first: walking away
     #     from a barrel past a shotgun guy cost 30 health (E1M4).
     b = f["barrel"]
-    if (b is not None and b[1] is not None and any(e["dist"] <= 800 and e["kind"] in SHOOTERS for e in f["enemies"])
-            and (b[0] < BARREL_KEEP and f["reload"] > AIM_LEAD or b[0] < 80 and f["weapon"] != "shotgun")):
+    # Right beside one (under 90 units, a blast of 60-110), step away even with the shotgun ready unless the
+    # shot is already lined up (E1M7, E1M3: a fireball meant for the expert hit a barrel 38 units behind it).
+    if (b is not None and b[1] is not None
+            and (any(e["dist"] <= 800 and e["kind"] in SHOOTERS for e in f["enemies"]) or f["attacker"] is not None)
+            and (b[0] < BARREL_KEEP and f["reload"] > AIM_LEAD or b[0] < 80 and f["weapon"] != "shotgun"
+                 or b[0] < 90 and not any(e["crosshair"] for e in f["enemies"]))):
         move = _away_from(f, b[1])
         if move is not None:
             return move
@@ -294,6 +308,21 @@ def _decide(f: dict) -> str:
     if (f["attacker"] is not None and f["damage"] >= 8 and has_ammo and not f["on_nukage"] and goal not in KILL_GOALS
             and all(e["dist"] > 200 for e in threats)):
         return turn_toward(f["attacker"])
+    if wading:
+        near = [e for e in threats if e["dist"] <= 450]
+        threats = []
+        if near:
+            t = min(near, key=_priority)
+            cone = any(kind.startswith("barrel") and d < BARREL_BLAST for k, (d, kind) in f["rays"].items()
+                       if k in ("ahead", "30 left", "30 right"))
+            if t["kind"] in MELEE and t["dist"] < 110:
+                return _open_side(f, "fire_strafe_")
+            if f["reload"] <= RELOAD_DODGE and not cone:
+                if t["crosshair"]:
+                    return "fire"
+                turn = turn_toward(t["angle"])
+                if turn.endswith(("_5", "_15", "_30")):
+                    return turn + "_fire"
     if threats:
         t = min(threats, key=_priority)
         # A barrel in the firing cone inside its blast radius takes the shot, shotgun spread included
@@ -327,9 +356,13 @@ def _decide(f: dict) -> str:
         # Two or more gunmen or imps with a line of fire: out of their sight while the shotgun reloads (with
         # bullets, whenever they hit), back out to fire when it is ready. They follow one at a time (E1M4's opening room:
         # 71 health gone in five seconds standing in the open). Moves keep facing them: no turning away.
-        if (t["kind"] not in BOSSES and f["group_cover"] is not None and len(shooters) >= 2
+        # One gunman with cover a few steps away: out of his sight while the shotgun reloads instead of standing
+        # in his fire to wait for the shot ("fire" while reloading took the most damage per decision in both arms).
+        lone = (len(shooters) == 1 and t["kind"] in HITSCAN and t["dist"] > 110 and f["group_cover"] is not None
+                and f["group_cover"][0] <= COVER_NEAR_ONE and f["reload"] > AIM_LEAD)
+        if (t["kind"] not in BOSSES and f["group_cover"] is not None and (lone or len(shooters) >= 2
                 and (f["reload"] > AIM_LEAD
-                     or (f["damage"] > 0 and (f["weapon"] != "shotgun" or f["health"] < 30)))):
+                     or (f["damage"] > 0 and (f["weapon"] != "shotgun" or f["health"] < 30))))):
             move = _move_toward(*f["group_cover"])
             if not _unsafe(f, move):
                 return move
@@ -404,7 +437,7 @@ def _decide(f: dict) -> str:
         return turn
 
     # 3. shot from out of view: face the attacker if we can fight back
-    if f["attacker"] is not None and has_ammo and not sprint:
+    if f["attacker"] is not None and has_ammo and not sprint and not wading:
         return turn_toward(f["attacker"])
 
     # 4. supplies: ammo when out, health when low
@@ -486,6 +519,11 @@ def _away_from(f: dict, angle: float) -> str | None:
         cands = ["forward", "strafe_right" if angle > 0 else "strafe_left"]
     else:
         cands = ["strafe_right" if angle > 0 else "strafe_left", "back" if abs(angle) < 90 else "forward"]
+    # Not toward a monster in front (E1M7's start: away from a barrel behind meant walking into a spectre).
+    # Gunmen ahead are no reason to stay by the barrel: walking toward them does not add to their fire.
+    if any(e["angle"] is not None and abs(e["angle"]) <= 45 and e["kind"] not in HITSCAN
+           and e["dist"] <= (300 if e["kind"] in MELEE else 160) for e in f["enemies"]):
+        cands = [c for c in cands if c != "forward"] + (["strafe_left", "strafe_right"] if "forward" in cands else [])
     ray = {"back": "behind", "forward": "ahead", "strafe_left": "60 left", "strafe_right": "60 right"}
     last = f["last"] or ""
     for c in cands:
@@ -511,6 +549,39 @@ def _dodge_fireball(f: dict) -> bool:
         return False
     moving = (f["last"] or "").endswith("strafe_" + side) and not f["blocked"]
     return eta >= DODGE_MIN or moving
+
+
+MOVE_DIR = {"forward": 0, "forward_short": 0, "back": 180, "strafe_left": 90, "strafe_right": -90,
+            "fire_strafe_left": 90, "fire_strafe_right": -90}
+
+
+def _toward_barrel(f: dict, cmd: str) -> bool:
+    """The move heads at the reported barrel while it is close and something that shoots is in view: a stray
+    shot sets it off beside the player (E1M5 at 100 ms: a strafe toward a barrel 110 units off, 70 -> 0)."""
+    b = f["barrel"]
+    if cmd not in MOVE_DIR or b is None or b[1] is None or b[0] >= 150:
+        return False
+    if not (any(e["kind"] in SHOOTERS for e in f["enemies"]) or f["attacker"] is not None):
+        return False
+    diff = abs((MOVE_DIR[cmd] - b[1] + 180) % 360 - 180)
+    return diff < 50
+
+
+def _barrel_safe(f: dict, cmd: str) -> str:
+    """Swap a move toward a near barrel for one that keeps away from it, if there is one."""
+    if not _toward_barrel(f, cmd):
+        return cmd
+    alts = {"strafe_left": ["strafe_right", "back"], "strafe_right": ["strafe_left", "back"],
+            "fire_strafe_left": ["fire_strafe_right", "fire"], "fire_strafe_right": ["fire_strafe_left", "fire"],
+            "forward": ["strafe_left", "strafe_right"], "forward_short": ["strafe_left", "strafe_right"],
+            "back": ["strafe_left", "strafe_right"]}[cmd]
+    ray = {"back": "behind", "strafe_left": "60 left", "strafe_right": "60 right",
+           "fire_strafe_left": "60 left", "fire_strafe_right": "60 right"}
+    for a in alts:
+        if a == "fire" or (f["rays"].get(ray.get(a, "ahead"), (0.0, ""))[0] > 64 and not _unsafe(f, a)
+                           and not _toward_barrel(f, a)):
+            return a
+    return cmd
 
 
 def _unsafe(f: dict, cmd: str) -> bool:
@@ -546,6 +617,11 @@ def decide(state: str) -> str:
         # 1.8 s of left-right turns between barrels and the walkway's edge, then a strafe into the pit).
         if ahead[0] > 40 and (_still(f) or not _unsafe(f, "forward_short")):
             return "forward_short"
+        # Nothing ahead but a wall or a drop: back off and let the route lead in at a new angle (E1M5 at
+        # 100 ms: 60 s of left-right turns in a corner between a wall and a drop, ended as stuck).
+        if f["moved"] < 5 and f["rays"].get("behind", (0.0, ""))[0] > 60 and not _unsafe(f, "back"):
+            return "back"
+    cmd = _barrel_safe(f, cmd)
     if not _unsafe(f, cmd) or cmd == "forward_short" and _still(f):
         return cmd
     # E1M3's walkway is ~100 units wide between toxic pits: a 250-unit strafe or a full run off the
