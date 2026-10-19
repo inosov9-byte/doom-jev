@@ -480,6 +480,11 @@ class Perception:
             best = min(range(lo, hi), key=lambda i: math.dist(pos, self.route[i]))
             self.idx = best
             off = math.dist(pos, self.route[best])
+            # The nearest route point lies in a pit the player is above, not in: a route planned from the pit
+            # (E1M5: the way out of the pool runs under the bridge; back on the bridge, the compass pointed
+            # down into the pool).
+            if off <= 96 and self._dead_end(*self.route[best]) and not self._dead_end(*pos):
+                off = math.inf
         if (not self.route or off > 96 or self.replan) and obs.tic - self.plan_fail_tic >= self.REPLAN_TICS:
             if self._job is None:
                 self.replan = False
