@@ -279,7 +279,7 @@ def with_weapon_detours(m: MapData, goals: list[Subgoal], start: tuple[float, fl
         if not name or name in held or (len(t) > 4 and (not t[4] & SKILL_FLAG[3] or t[4] & 16)):
             continue          # absent at skill 3 or multiplayer only (E1M3: the expert circled a missing shotgun)
         pos = (float(t[0]), float(t[1]))
-        grids, here, best = stage_grids(m, goals, strict_lifts=True), start, None
+        grids, here, best = stage_grids(m, goals, strict_lifts=True, avoid_barrels=False), start, None
         for i, (g, gr) in enumerate(zip(goals, grids)):
             base, a, b = gr.plan(here, g.pos), gr.plan(here, pos), gr.plan(pos, g.pos)
             if base and a and b:
@@ -316,7 +316,7 @@ def with_supply_detours(m: MapData, goals: list[Subgoal], start: tuple[float, fl
     k = next((i for i, g in enumerate(goals) if g.kind == "kill"), None)
     if k is None:
         return _cheap_supplies(m, goals, start) if "shotgun" in held else goals
-    gr = stage_grids(m, goals, strict_lifts=True)[k]
+    gr = stage_grids(m, goals, strict_lifts=True, avoid_barrels=False)[k]
     here = goals[k - 1].pos if k else start
     base = gr.plan(here, goals[k].pos)
     if not base:
@@ -343,7 +343,7 @@ def _cheap_supplies(m: MapData, goals: list[Subgoal], start: tuple[float, float]
     """Each CHEAP_SUPPLIES item goes before the stage whose route it is the cheapest detour from, if within
     its limit; items of one stage in nearest-neighbour order from the stage start."""
     from .wadmap import path_length
-    grids = stage_grids(m, goals, strict_lifts=True)
+    grids = stage_grids(m, goals, strict_lifts=True, avoid_barrels=False)
     starts = [start] + [g.pos for g in goals[:-1]]
     bases = [gr.plan(a, g.pos) for gr, a, g in zip(grids, starts, goals)]
     per_stage: dict[int, list[Subgoal]] = {}
@@ -408,11 +408,13 @@ def trigger_route(g: NavGrid, a: tuple[float, float], b: tuple[float, float], ma
     return best and best[1:]
 
 
-def stage_grids(m: MapData, goals: list[Subgoal], strict_lifts: bool = False) -> list[NavGrid]:
-    """Planner grid for each stage: the world as it is before that subgoal."""
+def stage_grids(m: MapData, goals: list[Subgoal], strict_lifts: bool = False,
+                avoid_barrels: bool = True) -> list[NavGrid]:
+    """Planner grid for each stage: the world as it is before that subgoal. Detour checks (weapons, supplies)
+    pass avoid_barrels=False: their limits are in plain path lengths."""
     grids, keys, opened = [], frozenset(), frozenset()
     for g in goals:
-        grids.append(NavGrid(world(m, keys, opened, strict_lifts)))
+        grids.append(NavGrid(world(m, keys, opened, strict_lifts), avoid_barrels=avoid_barrels))
         if g.kind == "key":
             keys = keys | {g.color}
         elif g.kind in ("switch", "walk", "shoot"):

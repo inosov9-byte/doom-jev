@@ -25,6 +25,7 @@ SOLID_THINGS = {2035: 10,                                              # barrel
                 25: 16, 26: 16, 27: 16, 28: 16}                        # impaled bodies
 SKILL_FLAG = {1: 1, 2: 1, 3: 2, 4: 4, 5: 4}                             # WAD thing flags per skill
 MAX_STEP = 24
+BARREL_AVOID, BARREL_COST = 144.0, 4.0     # extra route cost per cell near a barrel, falling off with distance
 PLAYER_HEIGHT = 56
 DOOR_SPECIALS = {1, 26, 27, 28, 31, 32, 33, 34, 117, 118}
 LOCKED_DOORS = {26: "blue", 32: "blue", 27: "yellow", 34: "yellow", 28: "red", 33: "red"}
@@ -112,7 +113,8 @@ _GEOMETRY: dict[int, dict] = {}
 
 
 class NavGrid:
-    def __init__(self, m: MapData):
+    def __init__(self, m: MapData, avoid_barrels: bool = True):
+        """avoid_barrels=False: plain shortest routes (detour lengths for the planner's item stages)."""
         self.m = m
         xs = [c for l in m.lines for c in (l.v1[0], l.v2[0])]
         ys = [c for l in m.lines for c in (l.v1[1], l.v2[1])]
@@ -144,6 +146,13 @@ class NavGrid:
                 self.blocked |= np.hypot(self.cx - t[0], self.cy - t[1]) < r + PLAYER_RADIUS
         self.cost = np.ones((self.h, self.w))
         self.cost[inside & np.isin(m.special[sec], list(DAMAGE_SECTORS))] = 25.0
+        # Keep routes away from barrels: a gunman's stray shot sets one off, up to 128 damage to whoever stands
+        # beside it (E1M6's chaingun yard: the route ran between barrels with zombiemen 300-500 away; one chain
+        # blast took 81 health at once).
+        for t in (m.things if avoid_barrels else ()):
+            if t[3] == 2035 and (len(t) < 5 or (t[4] & SKILL_FLAG[3] and not t[4] & 16)):
+                d = np.hypot(self.cx - t[0], self.cy - t[1])
+                self.cost += np.where(d < BARREL_AVOID, BARREL_COST * (BARREL_AVOID - d) / BARREL_AVOID, 0.0)
         self.blocked |= geo["solid_block"]
         self.cost += geo["solid_cost"]                      # prefer the middle of corridors
         flat = self.cost.reshape(-1)
