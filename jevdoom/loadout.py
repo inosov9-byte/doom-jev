@@ -45,8 +45,11 @@ def load(spec: str | None, map_name: str) -> dict | None:
 def apply(g, lo: dict) -> None:
     """Turn the pistol-start player into the carried state. Exact values: take everything, give the amount."""
     cmds = [f"give {GIVE[w]}" for w in lo["weapons"] if w in GIVE]
+    # Doom keeps a backpack across exits; ammo above the normal maximum means one was carried
+    if lo["bullets"] > 200 or lo["shells"] > 50 or lo.get("rockets", 0) > 50:
+        cmds.insert(0, "give backpack")
     for item, key in (("clip", "bullets"), ("shell", "shells"), ("rocketammo", "rockets")):
-        cmds += [f"take {item} 999"] + ([f"give {item} {lo[key]}"] if lo[key] > 0 else [])
+        cmds += [f"take {item} 999"] + ([f"give {item} {lo[key]}"] if lo.get(key, 0) > 0 else [])
     if lo["health"] < 100:
         cmds.append(f"take health {100 - lo['health']}")
     elif lo["health"] > 100:

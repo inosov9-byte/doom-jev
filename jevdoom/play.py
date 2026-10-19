@@ -191,7 +191,7 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     try:
         held = set(loadout["weapons"]) if loadout else set()
         goals = with_supply_detours(m, with_weapon_detours(m, load_or_solve(m, start), start, held=held), start,
-                                    held=held)
+                                    held=held, resources=carry and needs and compass)
     except RuntimeError:          # planner found no progression (E1M3/E1M4/E1M7): exit only, compass if any route
         st, mid, _ = exit_target(m)
         goals = [Subgoal("exit", "exit", st, mid)]
@@ -343,7 +343,8 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
                    "kills": obs.kills if obs else 0, "damage_taken": round(obs.damage_taken) if obs else 0,
                    "damage_dealt": round(obs.damage_dealt) if obs else 0, "hits": obs.hits if obs else 0,
                    "health_end": round(obs.health) if obs else None,
-                   "start_loadout": loadout, "needs": [list(e) for e in nd.log] if nd else None, "carry": carry, "end_loadout": from_obs(obs) if obs else None,
+                   "start_loadout": loadout, "needs": [list(e) for e in nd.log] if nd else None,
+                   "plan": [g.kind + ":" + g.label + ("?" if g.need else "") for g in goals], "carry": carry, "end_loadout": from_obs(obs) if obs else None,
                    "decisions": n_dec, "errors": n_err, "decisions_per_s": round(n_dec / max(wall, 1e-9), 2),
                    "latency_median": round(statistics.median(lat), 3) if lat else None,
                    "latency_p90": round(lat_sorted[int(0.9 * (len(lat_sorted) - 1))], 3) if lat else None,
