@@ -232,11 +232,8 @@ def _decide(f: dict) -> str:
             return "fire"
         # A raised lift between the player and the goal: lower it first (E1M2's exit switch sits beyond a lift
         # that rises again; the expert pushed into its face for 45 s).
-        # Not while standing on the lift: the face ahead is then the lift's own edge, and every use sends the
-        # lowered lift down again, so it never rises (E1M2 at 100 ms: 2-8 runs of 16 stalled at 99.5%, use and
-        # forward_short alternating for 45 s). Pushing on waits for it to rise.
-        if ahead[1].startswith("lift (raised)") and ahead[0] <= USE_REACH and f["blocked"] and not f["on_lift"]:
-            return "use"
+        if ahead[1].startswith("lift (raised)") and ahead[0] <= USE_REACH and f["blocked"]:
+            return _lift_blocked(f)
         if goal in ("exit", "switch"):
             return "use" if d <= USE_REACH else ("forward_short" if d < 200 else "forward")
         return "forward_short" if d < 200 else "forward"     # key or trigger line: walk onto it
@@ -503,8 +500,8 @@ def _decide(f: dict) -> str:
     #    A lift wall (manual lift line, E1M8 before the Barons) is used once, then walked onto as it lowers.
     if ahead[1].startswith("ledge too high") and ahead[0] <= USE_REACH and f["blocked"]:
         return "use"
-    if ahead[1].startswith("lift (raised)") and ahead[0] <= USE_REACH and not f["on_lift"]:
-        return "use"
+    if ahead[1].startswith("lift (raised)") and ahead[0] <= USE_REACH:
+        return _lift_blocked(f) if f["on_lift"] else "use"
     if ahead[1].startswith("lift (lowering)"):
         return "forward_short"                    # step on as it comes down
 
@@ -517,6 +514,17 @@ def _decide(f: dict) -> str:
         return _open_side(f, "strafe_")
 
     return "forward" if ahead[0] > (120 if f["on_nukage"] else 200) else "forward_short"
+
+
+def _lift_blocked(f: dict) -> str:
+    """A raised lift face in the way. Standing on the lift itself, use does nothing (Doom lift switches work
+    from their front side only): the lift rose again under the late player, and E1M2 runs stalled at 99.5%
+    pressing use for 45 s (7 of 16 at 100 ms). Step off and back on, so its walk-over line lowers it again."""
+    if not f["on_lift"]:
+        return "use"
+    if f["blocked"] and f["rays"].get("behind", (0.0, ""))[0] > 60 and not _unsafe(f, "back"):
+        return "back"
+    return "forward_short"
 
 
 def _priority(e: dict) -> float:
