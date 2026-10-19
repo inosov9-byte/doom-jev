@@ -302,7 +302,9 @@ MAX_SUPPLY_DETOUR = 1500.0
 # Without a boss: boxes of shells on cheap detours, when a shotgun is carried in (E1M4 starts with 15 shells;
 # the expert ran dry by 25-35 s and died to imps, a box of shells 241 units off the first stretch). Tried and
 # dropped: single shells (+4; E1M3's opening detour shifted the walkway fight and lost 2 of 4 seeds) and
-# health or armor (E1M5: more time in fights, earlier deaths).
+# health or armor (E1M5: more time in fights, earlier deaths). Also tried (2026-10-19, campaign runs): an armor
+# detour up to +800 when a map is entered with under 30 armor; E1M2 fell from 9/9 to 6/9 (rules) for 89 armor
+# carried out. Health and ammo are handled on the move instead (needs.py).
 CHEAP_SUPPLIES = {2049: ("box of shells", 600.0)}
 
 
@@ -416,41 +418,3 @@ def stage_grids(m: MapData, goals: list[Subgoal], strict_lifts: bool = False) ->
         elif g.kind in ("switch", "walk", "shoot"):
             opened = opened | {g.tag}
     return grids
-
-
-# Carried in from the previous map with little armor: armor on a detour up to this long (campaign only; a
-# pistol start keeps the plain route). E1M2's green armor is +767 off the route; the teacher reached the
-# exit fight with 0 armor in 9 of 10 merged-code campaigns. Health detours stay dynamic (needs.py).
-ARMOR_THINGS = {2018: "green armor", 2019: "blue armor"}
-LOADOUT_ARMOR_DETOUR = 800.0
-
-
-def with_loadout_detours(m: MapData, goals: list[Subgoal], start: tuple[float, float],
-                         loadout: dict | None) -> list[Subgoal]:
-    """Detours chosen from the state carried in: armor when entering with less than 30."""
-    if not loadout or loadout.get("armor", 0) >= 30:
-        return goals
-    from .wadmap import path_length
-    grids = stage_grids(m, goals, strict_lifts=True)
-    starts = [start] + [g.pos for g in goals[:-1]]
-    bases = [gr.plan(a, g.pos) for gr, a, g in zip(grids, starts, goals)]
-    best = None
-    for t in m.things:
-        name = ARMOR_THINGS.get(t[3])
-        if not name or (len(t) > 4 and (not t[4] & SKILL_FLAG[3] or t[4] & 16)):
-            continue
-        pos = (float(t[0]), float(t[1]))
-        for i, (gr, a, g, base) in enumerate(zip(grids, starts, goals, bases)):
-            if not base or math.dist(a, pos) + math.dist(pos, g.pos) - path_length(base) > LOADOUT_ARMOR_DETOUR:
-                continue
-            r, c = gr.to_cell(*pos)
-            if gr.near_drop[max(r - 2, 0):r + 3, max(c - 2, 0):c + 3].any():
-                continue
-            p1, p2 = gr.plan(a, pos), gr.plan(pos, g.pos)
-            if p1 and p2:
-                extra = path_length(p1) + path_length(p2) - path_length(base)
-                if extra <= LOADOUT_ARMOR_DETOUR and (best is None or extra < best[0]):
-                    best = (extra, i, Subgoal("item", name, pos, pos))
-    if best is None:
-        return goals
-    return goals[:best[1]] + [best[2]] + goals[best[1]:]
