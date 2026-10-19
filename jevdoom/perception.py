@@ -167,17 +167,19 @@ class Perception:
                         state = f"opening, fully open in about {max(0.5, round(eta * 2) / 2):g} s"
                     return d, f"door ({state})", nukage, thing
                 # The raised lift itself (E1M8: special 62 before the Barons), seen from the switch side: Doom uses
-                # a line from its front only. From the lift's own top the face is the drop on the far side and use
-                # does nothing (E1M2's exit lift: a run stood beside it pressing use for 45 s, 3 units short of
-                # the walk-over line that lowers it).
-                if i in self.lift_walls and cur == f and self.m.sector_tag[nxt] == self.m.lines[i].tag:
+                # a line from its front only. Seen across the lift from beside it, the face is a wall and use does
+                # nothing (E1M2's exit lift: a run stood beside it pressing use for 45 s, 3 units short of the
+                # walk-over line that lowers it). Standing on the lift itself it still reads as the lift, so the
+                # teacher steps off and back on (E1M2's exit and 83% lifts: on the risen lift, the face read as a
+                # wall and the route pushed forward into it).
+                if i in self.lift_walls and self._lift_face(i, cur, nxt, obs):
                     return d, self._lift_state(obs, nxt), nukage, thing
                 return d, "wall", nukage, thing
             if nf - cf > MAX_STEP:
                 # A lift under a high ceiling reads as a ledge, not a wall (E1M5: the lift at the top of the
                 # stairs to the teleport room; the expert slid along its face for 20 s without pressing use).
                 # Only when the lift is the far side: E1M2's exit lift has a switch face toward the step above.
-                if i in self.lift_walls and cur == f and self.m.sector_tag[nxt] == self.m.lines[i].tag:
+                if i in self.lift_walls and self._lift_face(i, cur, nxt, obs):
                     return d, self._lift_state(obs, nxt), nukage, thing
                 return d, "ledge too high to climb", nukage, thing
             if cf - nf > MAX_STEP and self._dead_end(ox + dx * (d + 12), oy + dy * (d + 12)):
@@ -185,6 +187,14 @@ class Perception:
             if nukage is None and self.m.special[nxt] in DAMAGE_SECTORS:
                 nukage = d
         return float(MAX_RAY), "open", nukage, thing
+
+    def _lift_face(self, i: int, cur: int, nxt: int, obs: Obs) -> bool:
+        """Lift line i, crossed from sector cur into nxt, reads as the lift: from its front with the lift beyond,
+        or with the player standing on the lift (cur) itself."""
+        tag = self.m.lines[i].tag
+        if cur == int(self.front[i]) and self.m.sector_tag[nxt] == tag:
+            return True
+        return self.m.sector_tag[cur] == tag and self.grid.sector_at(obs.x, obs.y) == cur
 
     def _lift_state(self, obs: Obs, lift: int) -> str:
         before = self.lift_floor_prev.get(lift)
