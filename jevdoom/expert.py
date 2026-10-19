@@ -499,8 +499,8 @@ def _dodge_fireball(f: dict) -> bool:
     needs ~0.25 s from a stand to clear the fireball's path (Doom strafe acceleration), more with a
     late decision: later ones were hit anyway, and a ready shotgun aimed at the imp kills it instead
     (E1M4: imps at 80-290 units, the expert dodged every fireball, never fired and lost 71 health)."""
-    if not f["enemies"] or any(e["kind"] in BOSSES for e in f["enemies"]):
-        return True               # unseen thrower: likely a Baron out of view (E1M8)
+    if any(e["kind"] in BOSSES for e in f["enemies"]):
+        return True
     eta, side = f["incoming"]
     if f["reload"] <= RELOAD_DODGE and any(e["crosshair"] and e["dist"] <= HITSCAN_ENGAGE for e in f["enemies"]):
         return False
