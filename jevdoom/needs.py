@@ -27,30 +27,33 @@ LABEL = {"Stimpack": "stimpack", "Medikit": "medikit", "GreenArmor": "green armo
          "ClipBox": "box of bullets", "Chaingun": "chaingun"}
 
 RETRY_TICS = 175          # an item too far by path is looked at again after 5 s
+READY_TICS = 105          # a planned detour stays valid for 3 s
 CHECK_TICS = 17           # look for a need at most twice a second
+TOPUP_WALK = 450.0        # longest walk to an item for a top-up
+TOPUP_CLEAR = 700         # a top-up item with a living monster this close is left alone (E1M1 nukage room imps)
 MONSTER_CLEAR = 350       # skip items with a living monster this close (a detour into an uncleared room)
-TOPUP_LEFT = 2000.0       # route units left to the exit when the top-up starts
+TOPUP_LEFT = 1200.0       # route units left to the exit when the top-up starts
 SPEED = 280.0             # units per second the teacher covers on a route, for the detour deadline
 
 
-def wanted(obs: Obs, exit_stage: bool, carry: bool) -> list[tuple[set[str], float]]:
-    """(item names, max walk in units) per resource that is low now. Mid-map: health below 50, or no
-    useful ammo left soon. Campaign exit stage: top up health, armor and ammo on a longer walk."""
+def wanted(obs: Obs, exit_stage: bool, carry: bool) -> list[tuple[set[str], float, bool]]:
+    """(item names, max walk in units, top-up?) per resource that is low now. Mid-map: health below 40, or
+    out of ammo for every weapon. Campaign exit stage: top up health, armor and shells on a short walk.
+    Not bullets: the pistol is a fallback, and E1M1's clip detours walked the teacher into the barrels
+    beside the nukage room (wedged, then killed by an imp, 2 of 20 runs)."""
     out = []
     shells = obs.shells if obs.has_shotgun else 0
-    if obs.health < 50:
-        out.append((set(HEALTH), 450.0 if obs.health < 30 else 350.0))
-    if shells < 4 and obs.bullets < 30:
-        out.append(((set(SHELLS) if obs.has_shotgun else {"Shotgun"}) | set(BULLETS), 450.0))
+    if obs.health < 40:
+        out.append((set(HEALTH), 450.0 if obs.health < 25 else 350.0, False))
+    if shells < 2 and obs.bullets < 15:
+        out.append(((set(SHELLS) if obs.has_shotgun else {"Shotgun"}) | set(BULLETS), 400.0, False))
     if carry and exit_stage:
         if obs.health < 80:
-            out.append(({n for n, v in HEALTH.items() if obs.health + v <= 105 or obs.health < 60}, 700.0))
-        if obs.armor < 40:
-            out.append((set(ARMOR), 700.0))
-        if obs.has_shotgun and obs.shells < 25:
-            out.append((set(SHELLS) - {"Shotgun"}, 600.0))
-        if obs.bullets < 80:
-            out.append((set(BULLETS) - {"Chaingun"}, 500.0))
+            out.append((set(HEALTH), TOPUP_WALK, True))
+        if obs.armor < 30:
+            out.append((set(ARMOR), TOPUP_WALK, True))
+        if obs.has_shotgun and obs.shells < 15:
+            out.append(({"Shell", "ShellBox"}, TOPUP_WALK, True))
     return out
 
 
@@ -65,6 +68,7 @@ class Needs:
         self.skip: dict[int, int] = {}        # item id -> tic until which it is not considered
         self._pool = ThreadPoolExecutor(max_workers=1)
         self._job = None                      # (future, thing, limit, stage)
+        self.ready = None                     # (thing, path, tic, stage) planned, waiting for the fight to end
         self.log: list[tuple] = []            # (tic, event, item) for summaries
 
     def step(self, perc, obs: Obs) -> bool:
@@ -83,28 +87,40 @@ class Needs:
         # top-up window: the exit stage's last stretch (a one-stage map like E1M1 is all exit stage)
         exit_stage = (stage >= len(perc.goals) - 1 and perc.route is not None
                       and path_length(perc.route[perc.idx:]) <= TOPUP_LEFT)
+        fighting = any(m.visible for m in obs.monsters)
         if self._job is not None:
             fut, thing, limit, jstage = self._job
             if not fut.done():
                 return False
             self._job = None
             path = fut.result()
-            if (jstage == stage and path and path_length(path) <= limit and math.dist(path[-1], (thing.x, thing.y)) < 40 and any(p.id == thing.id for p in obs.pickups)
+            if (jstage == stage and path and path_length(path) <= limit and math.dist(path[-1], (thing.x, thing.y)) < 40
                     and not self._hazard(perc, path)):
+                self.ready = (thing, path, obs.tic, jstage)
+            else:
+                self.skip[thing.id] = obs.tic + RETRY_TICS     # too far from here: maybe later
+        if self.ready is not None:
+            # A planned detour starts once no enemy is in view (planned during a fight, it is ready the moment
+            # the fight ends: E1M2's exit room fight took 86 -> 58 health right beside the exit switch).
+            thing, path, t0, rstage = self.ready
+            if (obs.tic - t0 > READY_TICS or rstage != stage or math.dist(path[0], (obs.x, obs.y)) > 128
+                    or not any(p.id == thing.id for p in obs.pickups)):
+                self.ready = None
+            elif not fighting:
+                self.ready = None
                 self._start(perc, obs, thing, path)
                 return True
-            self.skip[thing.id] = obs.tic + RETRY_TICS     # too far from here: maybe later
+        if obs.tic - self.check_tic < CHECK_TICS or self.ready is not None:
             return False
-        if obs.tic - self.check_tic < CHECK_TICS or any(m.visible for m in obs.monsters):
-            return False                          # not in the middle of a fight
         self.check_tic = obs.tic
         best = None
-        for names, limit in wanted(obs, exit_stage, self.carry):
+        for names, limit, topup in wanted(obs, exit_stage, self.carry):
+            clear = TOPUP_CLEAR if topup else MONSTER_CLEAR
             for p in obs.pickups:
                 if p.name not in names or self.skip.get(p.id, -1) > obs.tic:
                     continue
                 d = obs.dist_to(p.x, p.y)
-                if d > limit or any(math.hypot(m.x - p.x, m.y - p.y) < MONSTER_CLEAR for m in obs.monsters):
+                if d > limit or any(math.hypot(m.x - p.x, m.y - p.y) < clear for m in obs.monsters):
                     continue
                 if best is None or d < best[0]:
                     best = (d, p, limit)
