@@ -74,6 +74,7 @@ E1M2, held-out seeds 26-45:
 | E1M1-only student, zero-shot (6 seeds) | 0/6 | reached ~85% of the route; froze at the first mid-level switch |
 | Joint model | 13/20 | 75.4 s |
 | v5 (26 commands) | 12/20 | 79.2 s |
+| E1M8 model e1m8-d (regression check) | 12/20 | 86.3 s |
 | Teacher, instant (seeds 26-35) | 6/10 before the exit-room fix, 10/10 after | 58.7 s |
 
 E1M8 (boss finale), loadout `nominal`, timeout 240 s:
