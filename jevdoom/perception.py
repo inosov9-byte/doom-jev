@@ -58,6 +58,8 @@ class Perception:
         self.locked = {i: KEY_DOORS[l.special] for i, l in enumerate(L) if l.special in KEY_DOORS}
         self.lift_walls = {i for i, l in enumerate(L) if LIFT_TRIGGERS.get(l.special) == "S" and l.back != -1}
         self.lift_sectors_all = {sd for i in self.lift_walls for sd in (L[i].front, L[i].back)}
+        lift_tags = {l.tag for l in L if l.special in LIFT_TRIGGERS and l.tag}
+        self.lift_floors = {sd for sd, t in enumerate(self.m.sector_tag) if t in lift_tags}
         self.lift_floor_prev: dict[int, float] = {}  # lift sector -> floor at the previous description
         self.route: list | None = None
         self.via: int | None = None                    # route index just past a trigger line it must cross
@@ -614,6 +616,8 @@ class Perception:
             if d < self.BARREL_NEAR:
                 parts.append(f"Barrel {d:.0f} units away, {_side(obs.bearing_to(so.x, so.y))}.")
         psec = self.grid.sector_at(obs.x, obs.y)
+        if psec in self.lift_floors:
+            parts.append("Standing on a lift.")
         if psec >= 0 and self.m.special[psec] in DAMAGE_SECTORS:
             parts.append("Standing on toxic nukage.")       # the floor hurts every second spent on it
         elif hazard:
