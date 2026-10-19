@@ -303,7 +303,8 @@ class Perception:
                     best = (score, float(d), obs.bearing_to(*p))
         return None if best is None else (best[1], best[2])
 
-    DODGE_HORIZON = 1.2       # seconds ahead a projectile is worth reporting
+    BARREL_NEAR = 200         # report the nearest barrel this close (blast reach 128 + 16 along each axis, more diagonally)
+    DODGE_HORIZON = 1.2      # seconds ahead a projectile is worth reporting
     DODGE_MISS = 44.0         # closest approach that still hits: player radius 16 + fireball ~8-16, margin
 
     def incoming(self, obs: Obs) -> tuple[float, str] | None:
@@ -551,7 +552,12 @@ class Perception:
                 msec = self.grid.sector_at(m.x, m.y)
                 # Seen is not shootable: a Baron on a ledge above the pit showed its legs, and every
                 # shot hit the ledge face (E1M8). Line of fire: eye to the monster's chest.
-                if LINE_OF_FIRE and msec >= 0 and not self._sight_clear((obs.x, obs.y), eye, (m.x, m.y), floor[msec] + self.CHEST, floor, ceil):
+                # Doom aims hitscan at whatever part of a monster is visible: a gunman or imp behind a step
+                # with only its head showing is still hit (E1M4's stairs: an imp "out of the line of fire"
+                # threw fireballs at the expert, which ignored it). The Baron keeps the chest-only test.
+                heights = (self.CHEST,) if m.name == "BaronOfHell" else (self.CHEST, 48.0)
+                if LINE_OF_FIRE and msec >= 0 and not any(
+                        self._sight_clear((obs.x, obs.y), eye, (m.x, m.y), floor[msec] + h, floor, ceil) for h in heights):
                     enemies.append(f"{MONSTER_NAMES.get(m.name, m.name)} {d:.0f} away, {_side(b, ahead=0.5)}, out of the line of fire")
                     continue
                 r = 24 if m.name == "BaronOfHell" else 16      # Baron's radius: wide enough to shoot, not re-aim (E1M8)
@@ -600,7 +606,17 @@ class Perception:
                       for d, kind, _ in [self.ray(obs, rel)] if kind == DEAD_DROP and d < 300]
         if side_drops:
             parts.append("Drop with no way back " + ", ".join(side_drops) + ".")
-        if hazard:
+        # A barrel within its blast radius (128) of the player: any stray shot that hits it hurts the player
+        # (E1M5, E1M6: gunmen's bullets set off barrels beside the expert, 68 health gone at once).
+        barrels = [(obs.dist_to(so.x, so.y), so) for so in obs.solids if so.name == "ExplosiveBarrel"]
+        if barrels:
+            d, so = min(barrels, key=lambda b: b[0])
+            if d < self.BARREL_NEAR:
+                parts.append(f"Barrel {d:.0f} units away, {_side(obs.bearing_to(so.x, so.y))}.")
+        psec = self.grid.sector_at(obs.x, obs.y)
+        if psec >= 0 and self.m.special[psec] in DAMAGE_SECTORS:
+            parts.append("Standing on toxic nukage.")       # the floor hurts every second spent on it
+        elif hazard:
             parts.append(f"Toxic nukage floor {hazard[0]:.0f} units {hazard[1]}.")
 
         if self.compass:

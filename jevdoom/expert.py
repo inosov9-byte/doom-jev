@@ -18,6 +18,7 @@ USE_REACH = 64
 ENGAGE = 250          # fight only close enemies; otherwise keep running the route (lag-robust: a moving player is hard to hit)
 FIST = 90
 AMMO_ITEMS = ("ammo clip", "box of bullets", "shells", "box of shells", "shotgun")
+SHELL_ITEMS = ("shells", "box of shells", "shotgun")   # low on shells, bullets are no detour (E1M5: walked off the switch for them)
 HEALTH_ITEMS = ("stimpack", "medikit")      # a health bonus (+1) is not worth a detour
 HEALTH_GAIN = {"stimpack": 10, "medikit": 25}
 ARMOR_ITEMS = ("green armor", "blue armor")  # absorb a third / half of every hit
@@ -26,6 +27,9 @@ ARMOR_ITEMS = ("green armor", "blue armor")  # absorb a third / half of every hi
 # the route (E1M3 walkway: a zombieman 350 away took 71 -> 18).
 HITSCAN = ("zombieman", "shotgun guy")
 HITSCAN_ENGAGE = 500
+# Imps left alone beyond 250 walked up and clawed at 50-60 units, where the second imp got the reloading
+# expert (E1M4: most of the damage at 100 ms lag). Shot at range, a fireball takes ~1 s to arrive.
+IMP_ENGAGE = 400
 SHOOTERS = HITSCAN + ("imp",)
 GROUP_COVER_NEAR = 200
 EDGE = 120                     # a drop with no way back this close: no dodging, no long-range fights
@@ -38,6 +42,8 @@ AIM_LEAD = 0.35                # seconds before the shotgun is ready: stop dodgi
 RELOAD_DODGE = 0.2             # seconds of shotgun reload worth a sidestep instead of a fire  # Baron kiting band
 COVER_HEALTH = 70             # below this, a hit from a boss sends the expert behind cover
 BARREL_BLAST = 160             # barrel explosion radius is 128; never shoot one closer than this
+BARREL_KEEP = 135              # a barrel blast does 128 minus the box distance (axis distance less 16): keep this far under fire
+DODGE_MIN = 0.25               # seconds: a fireball arriving sooner is not dodged from a stand
 KILL_GOALS = ("baron of hell",)
 DEAD_DROP = "drop with no way back"
 # How far a move can carry the player, slide included (a run builds momentum that slides ~60-150 units
@@ -120,6 +126,9 @@ def parse_state(s: str) -> dict:
             f["route"], f["route_left"] = _angle(m.group(2)), float(m.group(3))
     m = re.search(r"Toxic nukage floor \d+ units (ahead|30 left|30 right)", s)
     f["nukage"] = m.group(1) if m else None
+    f["on_nukage"] = "Standing on toxic nukage" in s
+    m = re.search(r"Barrel (\d+) units away, ([^.]+)\.", s)
+    f["barrel"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     m = re.search(r"Being shot from out of view, ([^.]+)\.", s)
     if m:
         f["attacker"] = _angle(m.group(1))
@@ -222,19 +231,34 @@ def _decide(f: dict) -> str:
     #     Not at the edge of a drop with no way back: a fireball costs 3-24 health, the pit the whole run
     #     (E1M3's walkway: dodges at 100 ms lag carried the expert over the edge on most seeds).
     edge = min(f["drops"].values(), default=1e9) < EDGE
-    if f["incoming"] is not None and not edge:
+    if f["incoming"] is not None and not edge and _dodge_fireball(f):
         side = f["incoming"][1]
         other = "right" if side == "left" else "left"
-        if f["rays"].get(f"60 {side}", (1500.0, ""))[0] < 40 and f["rays"].get(f"60 {other}", (0.0, ""))[0] >= 40:
+        last = f["last"] or ""
+        if (f["rays"].get(f"60 {side}", (1500.0, ""))[0] < 40 and f["rays"].get(f"60 {other}", (0.0, ""))[0] >= 40
+                or f["blocked"] and last.endswith("strafe_" + side)):
             side = other
         return "strafe_" + side
+
+    # 1c. a barrel within blast range while something can shoot: use the shotgun's reload to step away from
+    #     it. A stray bullet or fireball that hits it costs up to 128 health (E1M5, E1M6: gunmen set off
+    #     barrels beside the expert, 68 health gone at once). A ready shotgun fights first: walking away
+    #     from a barrel past a shotgun guy cost 30 health (E1M4).
+    b = f["barrel"]
+    if (b is not None and b[1] is not None and any(e["dist"] <= 800 for e in f["enemies"])
+            and (b[0] < BARREL_KEEP and f["reload"] > AIM_LEAD or b[0] < 80 and f["weapon"] != "shotgun")):
+        move = _away_from(f, b[1])
+        if move is not None:
+            return move
 
     # 2. enemies within range (fist range when out of ammo). Near the exit or at low health,
     #    run instead: the switch ends the level, and a fight at 0.7 s per decision is a bad trade.
     #    E1M2: running past an imp and two zombiemen into the exit room killed the expert from behind
     #    on most failed seeds, so the near-exit sprint only applies with at most one enemy within 300.
     crowd = sum(1 for e in f["enemies"] if e["dist"] <= 300) >= 2
-    sprint = (f["route_left"] is not None and f["route_left"] < 700 and not crowd) or f["health"] < 30
+    # Only the exit ends the level: near a key or switch the enemies are still there afterwards (E1M4's blue
+    # key room: the expert ran at three imps with the shotgun ready and lost 57 health).
+    sprint = (goal == "exit" and f["route_left"] is not None and f["route_left"] < 700 and not crowd) or f["health"] < 30
     reach = (100 if sprint else ENGAGE) if has_ammo else FIST
     # Demons close the gap fast and only bite: shoot them on the way in rather than walking into them
     # (E1M8's opening: the expert walked into the barrel field to meet the pack).
@@ -252,21 +276,23 @@ def _decide(f: dict) -> str:
     threats = [e for e in f["enemies"] if e["angle"] is not None
                and (e["dist"] <= reach or (e["kind"] in BOSSES and has_ammo)
                     or (e["kind"] in HITSCAN and e["dist"] <= hitscan_reach)
+                    or (e["kind"] == "imp" and e["dist"] <= min(hitscan_reach, IMP_ENGAGE))
                     or (e["kind"] in MELEE and e["dist"] <= melee_reach))]
     if threats:
-        # Shotgun guys first among similar distances: one blast takes 9-45 health (E1M4, E1M5 openings).
-        t = min(threats, key=lambda e: e["dist"] * (0.6 if e["kind"] == "shotgun guy" else 1.0))
+        t = min(threats, key=_priority)
         # A barrel in the firing cone inside its blast radius takes the shot, shotgun spread included
         # (E1M8: one blast, 100 -> 10 health; a pellet clipped a barrel 41 units off, 100 -> 35).
-        cone = min((d for k, (d, kind) in f["rays"].items() if k in ("ahead", "30 left", "30 right")
-                    and kind.startswith("barrel")), default=1500.0)
+        # A barrel on a 30 degree ray lies half its distance off the aim line: only near ones meet the spread
+        # (E1M4: a barrel 128 away on the 30 degree ray kept the expert from firing at an imp 79 away).
+        cone = min((d for k, (d, kind) in f["rays"].items() if kind.startswith("barrel")
+                    and (k == "ahead" or k in ("30 left", "30 right") and d < 64)), default=1500.0)
         if cone < BARREL_BLAST:
             move = "back" if f["rays"].get("behind", (0.0, ""))[0] > 120 else _open_side(f, "strafe_")
             if not _unsafe(f, move):
                 return move
             threats = []            # boxed in by drops beside barrels (E1M3's walkway): hold fire, keep walking
     if threats:
-        t = min(threats, key=lambda e: e["dist"] * (0.6 if e["kind"] == "shotgun guy" else 1.0))
+        t = min(threats, key=_priority)
         # A barrel beside enemies, outside its blast: shoot the barrel (E1M8's opening: demon packs, pistol only).
         # Not with a second barrel near the player: blasts chain (E1M8 seed 3: 100 -> 35 in one shot).
         near_barrel = min((d for k, (d, kind) in f["rays"].items() if k != "ahead" and kind.startswith("barrel")),
@@ -334,8 +360,15 @@ def _decide(f: dict) -> str:
             return "fire" if t["kind"] in HITSCAN else _dodge(f)
         # Within claw reach and reloading: back off facing them instead of standing to wait for the shot
         # (E1M3's blue key trap: three imps clawed the expert 46 -> 16 while it waited out each reload).
-        if f["reload"] > RELOAD_DODGE and t["dist"] <= 110 and t["kind"] not in MELEE                 and f["rays"].get("behind", (0.0, ""))[0] > 120 and not (f["blocked"] and f["last"] == "back"):
+        if f["reload"] > RELOAD_DODGE and t["dist"] <= (150 if t["kind"] == "imp" else 110) and t["kind"] not in MELEE                 and f["rays"].get("behind", (0.0, ""))[0] > 120 and not (f["blocked"] and f["last"] == "back"):
             return "back"
+        # Back to a wall: sidestep out of reach instead, away from its side (a sidestep toward it stays in
+        # reach: E1M5's start, 10-24 per strafe beside imps). "fire" stands still until the shot is out, up to
+        # a second (E1M7's start: an imp and a spectre at 48-139 units took 57 health during one such wait).
+        if f["reload"] > AIM_LEAD and t["dist"] <= 110 and t["kind"] not in HITSCAN and abs(t["angle"]) >= 10:
+            move = "strafe_right" if t["angle"] > 0 else "strafe_left"
+            if f["rays"].get("60 " + move.split("_")[1], (0.0, ""))[0] > 96 and not _unsafe(f, move) and not (f["blocked"] and f["last"] == move):
+                return move
         if t["crosshair"]:
             if f["damage"] > 0 and "fire" in (f["last"] or "") and t["kind"] not in HITSCAN:
                 return _open_side(f, "fire_strafe_")       # getting hit while shooting: dodge and keep firing
@@ -370,7 +403,7 @@ def _decide(f: dict) -> str:
     health += [p for p in f["pickups"] if p["name"] in ARMOR_ITEMS and p["angle"] is not None and p["dist"] < 900
                and f["armor"] < 50 and not _cut_off(f, p)]
     ammo = [p for p in f["pickups"] if p["name"] in AMMO_ITEMS and p["angle"] is not None and p["dist"] < 600
-            and (not has_ammo or low_shells) and not _cut_off(f, p)]
+            and (not has_ammo or low_shells and p["name"] in SHELL_ITEMS) and not _cut_off(f, p)]
     # Health and armor first unless out of ammo altogether (E1M4: low on shells, the expert walked past
     # blue armor 460 units away to fetch a shotgun, then died at 23 health).
     items = health if health and (f["health"] < 40 or has_ammo or not ammo) else ammo
@@ -398,8 +431,9 @@ def _decide(f: dict) -> str:
     if ahead[1].startswith("door (opening"):
         return "forward_short"
 
-    # 6. face the route
-    if route is not None and abs(route) >= 7.5:
+    # 6. face the route. On nukage, coarser: every second there costs health, and fine 5 degree corrections
+    #    left the expert wading for seconds (E1M5's pool before the switch: 5 health per second, 20 lost).
+    if route is not None and abs(route) >= (20 if f["on_nukage"] else 7.5):
         return turn_toward(route)
 
     # 7. a lift: the route goes up a ledge too high to climb right in front: press use to lower it.
@@ -419,7 +453,48 @@ def _decide(f: dict) -> str:
     if ahead[1] != "open" and ahead[0] < 40:
         return _open_side(f, "strafe_")
 
-    return "forward" if ahead[0] > 200 else "forward_short"
+    return "forward" if ahead[0] > (120 if f["on_nukage"] else 200) else "forward_short"
+
+
+def _priority(e: dict) -> float:
+    """Target order: nearest first, shotgun guys first among similar distances (one blast takes 9-45 health,
+    E1M4, E1M5 openings), and one already in the crosshair before an equally near one that needs a turn."""
+    return e["dist"] * (0.6 if e["kind"] == "shotgun guy" else 1.0) - (40 if e["crosshair"] else 0)
+
+
+def _away_from(f: dict, angle: float) -> str | None:
+    """A move that takes the player away from a spot at this bearing without turning, if there is room."""
+    if abs(angle) <= 45:
+        cands = ["back", "strafe_right" if angle > 0 else "strafe_left"]
+    elif abs(angle) >= 135:
+        cands = ["forward", "strafe_right" if angle > 0 else "strafe_left"]
+    else:
+        cands = ["strafe_right" if angle > 0 else "strafe_left", "back" if abs(angle) < 90 else "forward"]
+    ray = {"back": "behind", "forward": "ahead", "strafe_left": "60 left", "strafe_right": "60 right"}
+    last = f["last"] or ""
+    for c in cands:
+        if f["rays"].get(ray[c], (0.0, ""))[0] > 64 and not _unsafe(f, c) and not (f["blocked"] and last == c):
+            return c
+    return None
+
+
+def _dodge_fireball(f: dict) -> bool:
+    """Worth sidestepping the reported fireball. Against Barons always (E1M8). Against imps a sidestep
+    needs ~0.25 s from a stand to clear the fireball's path (Doom strafe acceleration), more with a
+    late decision: later ones were hit anyway, and a ready shotgun aimed at the imp kills it instead
+    (E1M4: imps at 80-290 units, the expert dodged every fireball, never fired and lost 71 health)."""
+    if any(e["kind"] in BOSSES for e in f["enemies"]):
+        return True
+    eta, side = f["incoming"]
+    if f["reload"] <= RELOAD_DODGE and any(e["crosshair"] and e["dist"] <= HITSCAN_ENGAGE for e in f["enemies"]):
+        return False
+    # A ready shotgun with an enemy near: turn and shoot (one tic to turn) rather than dodge. A shotgun guy
+    # 63 units away blasted the dodging expert for 27 (E1M6's imp yard).
+    if f["weapon"] == "shotgun" and f["reload"] <= RELOAD_DODGE and any(
+            e["dist"] <= ENGAGE or e["kind"] in HITSCAN and e["dist"] <= 300 for e in f["enemies"]):
+        return False
+    moving = (f["last"] or "").endswith("strafe_" + side) and not f["blocked"]
+    return eta >= DODGE_MIN or moving
 
 
 def _unsafe(f: dict, cmd: str) -> bool:
