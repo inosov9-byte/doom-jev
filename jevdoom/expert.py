@@ -81,7 +81,7 @@ def parse_state(s: str) -> dict:
                "bullets": 0, "shells": 0, "weapon": "pistol", "moved": 0}
     m = re.search(r"Health (\d+), armor (\d+)", s)
     f["health"], f["armor"] = (int(m.group(1)), int(m.group(2))) if m else (100, 0)
-    m = re.search(r"Weapon: (\w+); (\d+) bullets, (\d+) shells", s)
+    m = re.search(r"Weapon: ([a-z ]+); (\d+) bullets, (\d+) shells", s)
     if m:
         f["weapon"], f["bullets"], f["shells"] = m.group(1), int(m.group(2)), int(m.group(3))
     m = re.search(r"Enemies in view: ([^.]*)\.", s)
@@ -127,8 +127,10 @@ def parse_state(s: str) -> dict:
         if m:
             f["goal"] = m.group(1)
             f["route"], f["route_left"] = _angle(m.group(2)), float(m.group(3))
-    m = re.search(r"Toxic nukage floor \d+ units (ahead|30 left|30 right)", s)
-    f["nukage"] = m.group(1) if m else None
+    m = re.search(r"Toxic nukage floor (\d+) units (ahead|30 left|30 right)", s)
+    # Only near nukage steers sidesteps: one 599 units off on the 30 degree ray kept the teacher strafing into a
+    # closed door beside a spectre for 3 s (E1M5's start, 50 -> 1).
+    f["nukage"] = m.group(2) if m and int(m.group(1)) < 250 else None
     f["on_nukage"] = "Standing on toxic nukage" in s
     f["on_lift"] = "Standing on a lift" in s
     m = re.search(r"Barrel (\d+) units away, ([^.]+)\.", s)
@@ -230,7 +232,11 @@ def _decide(f: dict) -> str:
     # Not a key or trigger line: those were walked onto through fire on E1M3 (stopping to fight short of the
     # stair trigger in the last corridor lost more runs than it saved).
     walk_on = goal not in ("exit", "switch", "switch to shoot", "trigger line") and "key" not in goal
-    guarded = walk_on and has_ammo and any(e["angle"] is not None and e["dist"] <= 200 for e in f["enemies"])
+    # A supply (not a weapon) with gunmen or imps in range is fought for too: E1M6's red key wave met the teacher
+    # walking onto a box of shells with a shotgun guy and two imps at 300-400 (69 -> 4 in six seconds).
+    supply = walk_on and goal not in ("shotgun", "chaingun", "rocket launcher")
+    guarded = walk_on and has_ammo and any(e["angle"] is not None and (
+        e["dist"] <= 200 or supply and e["kind"] in SHOOTERS and e["dist"] <= IMP_ENGAGE) for e in f["enemies"])
     if f["exit_near"] is not None and goal not in KILL_GOALS and not guarded:     # a kill target is fought, not walked onto
         d, a = f["exit_near"]
         if a is not None and abs(a) >= (2.5 if goal == "switch to shoot" else 7.5):
@@ -339,7 +345,10 @@ def _decide(f: dict) -> str:
                     and (k == "ahead" or k in ("30 left", "30 right") and d < 64)), default=1500.0)
         if cone < BARREL_BLAST:
             move = "back" if f["rays"].get("behind", (0.0, ""))[0] > 120 else _open_side(f, "strafe_")
-            if not _unsafe(f, move):
+            if f["blocked"] and f["last"] == move:          # that way is shut: the other side
+                move = {"back": _open_side(f, "strafe_"), "strafe_left": "strafe_right",
+                        "strafe_right": "strafe_left"}[move]
+            if not _unsafe(f, move) and not (f["blocked"] and f["last"] == move):
                 return move
             threats = []            # boxed in by drops beside barrels (E1M3's walkway): hold fire, keep walking
     if threats:
