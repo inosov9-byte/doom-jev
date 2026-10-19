@@ -223,6 +223,7 @@ class Perception:
     # Gunmen cannot be dodged; in E1M4's opening room four of them took 71 health in five seconds.
     SHOOTERS = ("Zombieman", "ShotgunGuy", "DoomImp")
     SHOOTER_RANGE = 800
+    HITSCAN = ("Zombieman", "ShotgunGuy")
     EYE, CHEST = 41.0, 32.0                  # Doom player eye height; a monster's mid height
 
     def _live_heights(self, obs: Obs):
@@ -589,10 +590,14 @@ class Perception:
             es = self.escape(obs, bosses)
             if es:
                 parts.append(f"Escape from {name}: {es[0]:.0f} units open, {_side(es[1])}.")
-        elif len(shooters) >= 2:
+        elif len(shooters) >= 2 or any(m.name in self.HITSCAN for m in shooters):
+            # One gunman is reported too: hitscan cannot be dodged, only its line of sight broken (E1M3, E1M5:
+            # most damage was taken standing in a shotgun guy's view while the shotgun reloaded).
+            n = len(shooters)
             cv = self.cover(obs, shooters, reach=320)
-            parts.append(f"Cover from {len(shooters)} shooters: {cv[0]:.0f} units, {_side(cv[1])}." if cv
-                         else f"Cover from {len(shooters)} shooters: none near.")
+            what = f"{n} shooters" if n > 1 else "1 shooter"
+            parts.append(f"Cover from {what}: {cv[0]:.0f} units, {_side(cv[1])}." if cv
+                         else f"Cover from {what}: none near.")
 
         rays, hazard = [], None
         for name, rel in RAYS:
