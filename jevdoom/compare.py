@@ -101,6 +101,7 @@ def main(argv=None):
     ap.add_argument("--timeout", type=int, default=120, help="game seconds per run; a run with no route progress for 45 s ends as \"stuck\"")
     ap.add_argument("--local-url", default=LOCAL_URL)
     ap.add_argument("--no-video", action="store_true")
+    ap.add_argument("--no-needs", action="store_true", help="no supply subgoals during the map (needs.py)")
     ap.add_argument("--window", action="store_true")
     ap.add_argument("--runs", default="runs")
     ap.add_argument("--loadout", help="carried state: pistol (default), nominal, or a loadout/summary.json file")
@@ -143,7 +144,7 @@ def main(argv=None):
     jobs = [(seed, arm) for seed in args.seeds for arm in args.arms]
     kw = dict(map_name=args.map, local_url=args.local_url, timeout=args.timeout, window=args.window,
               record_video=not args.no_video, runs_dir=str(out_dir), dry_run=args.dry_run,
-              loadout=load_loadout(args.loadout, args.map))
+              loadout=load_loadout(args.loadout, args.map), needs=not args.no_needs)
 
     def done(seed, arm, s):
         results.append(s)

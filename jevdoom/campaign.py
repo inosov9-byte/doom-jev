@@ -25,6 +25,7 @@ def main(argv=None):
     ap.add_argument("--timeout", type=int, default=150)
     ap.add_argument("--local-url", default=LOCAL_URL)
     ap.add_argument("--no-video", action="store_true")
+    ap.add_argument("--no-needs", action="store_true", help="no supply subgoals during the maps (needs.py)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
 
@@ -34,7 +35,8 @@ def main(argv=None):
     for mp in args.maps:
         print(f"--- {mp} seed {args.seed} carrying {lo or 'pistol start'}", flush=True)
         s = run(args.arm, args.seed, map_name=mp, local_url=args.local_url, timeout=args.timeout,
-                record_video=not args.no_video, runs_dir=str(out / mp), loadout=lo)
+                record_video=not args.no_video, runs_dir=str(out / mp), loadout=lo,
+                needs=not args.no_needs, carry=not args.no_needs and mp != args.maps[-1])
         legs.append(s)
         print(f"    {s['outcome']:8s} progress {s['route_progress_pct']:5.1f}%  {s['game_seconds']:5.1f}s  "
               f"kills {s['kills']}  end {s['end_loadout']}", flush=True)

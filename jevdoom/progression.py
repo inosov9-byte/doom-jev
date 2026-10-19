@@ -302,7 +302,9 @@ MAX_SUPPLY_DETOUR = 1500.0
 # Without a boss: boxes of shells on cheap detours, when a shotgun is carried in (E1M4 starts with 15 shells;
 # the expert ran dry by 25-35 s and died to imps, a box of shells 241 units off the first stretch). Tried and
 # dropped: single shells (+4; E1M3's opening detour shifted the walkway fight and lost 2 of 4 seeds) and
-# health or armor (E1M5: more time in fights, earlier deaths).
+# health or armor (E1M5: more time in fights, earlier deaths). Also tried (2026-10-19, campaign runs): an armor
+# detour up to +800 when a map is entered with under 30 armor; E1M2 fell from 9/9 to 6/9 (rules) for 89 armor
+# carried out. Health and ammo are handled on the move instead (needs.py).
 CHEAP_SUPPLIES = {2049: ("box of shells", 600.0)}
 
 

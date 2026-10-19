@@ -92,6 +92,16 @@ Finding: tactics that need instant reactions do not transfer to a ~90 ms student
 
 Campaign teacher (E1M1 → E1M8 with carry-over): E1M1 and E1M2 reliable; E1M3 often without delay, rarely at 100 ms; E1M4 ~2/8; E1M5-E1M7 not yet. The planner has routes on every map; the remaining failures are fights.
 
+Campaign supplies (`needs.py`: health/ammo detours on the move, top-up before each exit), seeds 26-45, merged fights code (2e3d3aa), timeout 300 s:
+
+| Map | rules, before | rules, after | 100 ms, before | 100 ms, after |
+|---|---|---|---|---|
+| E1M1 | 19/20 | 19/20 | 19/20 | 20/20 |
+| E1M2 | 18/19 | 18/19 | 15/19 | 16/20 |
+| E1M3 | 7/18 | 10/18 | 2/15 | 4/16 |
+| E1M4 | 2/7 | 1/10 | 0/2 | 0/4 |
+| Health leaving E1M2 (median) | 84 | 92 | 77 | 92 |
+
 ## Next
 
 1. Teacher fights on E1M3-E1M7 until a full `campaign.py --arm rules` run reaches E1M8 at 100 ms delay.

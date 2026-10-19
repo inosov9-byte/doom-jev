@@ -11,6 +11,7 @@ Read this first in a new session. It says where the work stands, where things li
 - **Key finding:** a teacher tuned with instant reactions is unlearnable for a ~90 ms student: 50 ms of lag took the E1M8 teacher from ~70% to 0%. Teacher tactics are now measured with `rules-lag-100` too (shoot only when the shotgun is ready, dodge during the reload, stand and aim 0.35 s before the shot, keep distance from projectile throwers, openness-aware escape from dead-end corners).
 - **Student speed:** `fastjev.Scorer` replays CUDA graphs per padded prompt length: 87 ms per decision (was 114), same choices. The 4B forward is compute-bound at ~400 tokens beyond that; a cached prompt prefix did not help.
 - **Campaign teacher (rules / rules-lag-100):** E1M1, E1M2 reliable; E1M3 often without lag, rarely with it; E1M4 ~2/8; E1M5-E1M7 0 (routes exist on every map now; fights remain). Work continues on `phase/campaign-fights2` (agent run).
+- **Campaign supplies (`needs.py`, branch `phase/campaign-supplies`):** when health drops below 40 or the shotgun is nearly dry, perception swaps the compass to the nearest live item on a short walk (A* off the game loop, no monster near the item), then restores the stage route; in a campaign (`carry`), the last 1200 route units before each exit also top up health (<80), armor (<30) and shells (<15). Seeds 26-45, merged fights code: E1M3 exits 7/18 -> 10/18 (rules), 2/15 -> 4/16 (100 ms); E1M2 leaves with 92 health instead of 77-84; maps cleared 46 -> 48 (rules), 36 -> 40 (100 ms). E1M4 still dies at ~48% (imps at the switch stage, shells in hand). `--no-needs` (campaign.py, compare.py, play.py) turns it off. Guards, with vs without: E1M1 and E1M2 pistol start seeds 26-30 10/10 vs 10/10 and 10/10 vs 9/10; E1M8 nominal seeds 1-8 run twice, rules 11/16 vs 12/16, 100 ms 5/16 vs 4/16 (no detour started in any failed rules run). Tried and dropped: an armor detour (up to +800) on entering with <30 armor (E1M2 rules 6/9); bullets in the top-up and health <50 mid-map (E1M1 detours into the nukage room barrels and imps, 3 deaths in 20). Side effect: detours shift E1M2's view so the incidental green armor is missed more often (rules: 0 armor leaving E1M2 in 11 of 18 exits vs 6 of 18).
 
 ## Where things live
 
@@ -54,6 +55,7 @@ Teacher games run in parallel with `--jobs` (8-10 on 16 cores; more distorts rea
 
 ## Known issues
 
+- E1M2 exit at 100 ms: 2-4 of 20 campaigns stall beside the exit (stuck at 99%), standing on the lift in front of the switch and pressing use on the raised lift ahead (expert step 7) while the compass still reads 64 units left; appeared with or without supply detours.
 - E1M8 student failures: deaths in the Baron fight (late dodges) and occasional stalls near the lift. Each DAgger round adds the states the student actually reaches.
 - Weapon choice is a fixed rule (shotgun when it has shells, then chaingun, pistol, fist; rocket launcher only at 300+ units). Ivan wants it to become a Jev skill (switch commands + teacher labels) once campaign runs make shell economy matter.
 - Solid things are circles in perception; Doom uses square boxes.
