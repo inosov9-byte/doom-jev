@@ -69,6 +69,8 @@ class Perception:
         self.prev_cmd: str | None = None
         self.history: list[tuple[str, float]] = []   # (command, units moved) for recent decisions
         self.seen: dict[int, tuple[int, float, float]] = {}   # shooter id -> (tic, x, y) last seen in the line of fire
+        self.barrels: dict[int, tuple[float, float]] = {}     # barrel id -> position at the previous description
+        self.bursting: dict[int, tuple[int, float, float]] = {}   # barrel id -> (tic noticed, x, y): hit, not yet blown
         self.door_ceil_prev: dict[int, float] = {}   # door sector -> ceiling height at the previous description
         self.doors_seen_open: set[int] = set()
         self.live_grids: dict[int, NavGrid] = {}     # stage -> grid rebuilt from live sector heights
@@ -308,6 +310,8 @@ class Perception:
                     best = (score, float(d), obs.bearing_to(*p))
         return None if best is None else (best[1], best[2])
 
+    BURST_TICS = 14           # a barrel blows up 14 tics after it is killed
+    BURST_NEAR = 250          # blast reach 128 + 16 along each axis: up to ~205 units diagonally
     BARREL_NEAR = 200         # report the nearest barrel this close (blast reach 128 + 16 along each axis, more diagonally)
     DODGE_HORIZON = 1.2      # seconds ahead a projectile is worth reporting
     DODGE_MISS = 44.0         # closest approach that still hits: player radius 16 + fireball ~8-16, margin
@@ -628,6 +632,18 @@ class Perception:
         # A barrel within its blast radius (128) of the player: any stray shot that hits it hurts the player
         # (E1M5, E1M6: gunmen's bullets set off barrels beside the expert, 68 health gone at once).
         barrels = [(obs.dist_to(so.x, so.y), so) for so in obs.solids if so.name == "ExplosiveBarrel"]
+        # A barrel that was hit leaves the object list at once but blows up ~14 tics later (0.4 s): the
+        # barrel that killed E1M7 runs at 53-71 health had already vanished from the text when it went off.
+        alive = {so.id: (so.x, so.y) for _, so in barrels}
+        for i, (x, y) in self.barrels.items():
+            if i not in alive:
+                self.bursting[i] = (obs.tic, x, y)
+        self.barrels = alive
+        self.bursting = {i: v for i, v in self.bursting.items() if obs.tic - v[0] <= self.BURST_TICS}
+        if self.bursting:
+            _, x, y = min(self.bursting.values(), key=lambda v: obs.dist_to(v[1], v[2]))
+            if obs.dist_to(x, y) < self.BURST_NEAR:
+                parts.append(f"Barrel about to explode {obs.dist_to(x, y):.0f} units away, {_side(obs.bearing_to(x, y))}.")
         if barrels:
             d, so = min(barrels, key=lambda b: b[0])
             if d < self.BARREL_NEAR:
@@ -686,6 +702,7 @@ class Perception:
         self.lift_floor_prev = {}
         self.history = []
         self.seen = {}
+        self.barrels, self.bursting = {}, {}
         self.stage = 0
         self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
         self._job = None

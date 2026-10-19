@@ -43,6 +43,7 @@ AIM_LEAD = 0.35                # seconds before the shotgun is ready: stop dodgi
 RELOAD_DODGE = 0.2             # seconds of shotgun reload worth a sidestep instead of a fire  # Baron kiting band
 COVER_HEALTH = 70             # below this, a hit from a boss sends the expert behind cover
 BARREL_BLAST = 160             # barrel explosion radius is 128; never shoot one closer than this
+BURST_FLEE = 210               # a barrel about to explode this close: move away from it first
 BARREL_KEEP = 135              # a barrel blast does 128 minus the box distance (axis distance less 16): keep this far under fire
 DODGE_MIN = 0.25               # seconds: a fireball arriving sooner is not dodged from a stand
 KILL_GOALS = ("baron of hell",)
@@ -135,6 +136,8 @@ def parse_state(s: str) -> dict:
     f["on_lift"] = "Standing on a lift" in s
     m = re.search(r"Barrel (\d+) units away, ([^.]+)\.", s)
     f["barrel"] = (float(m.group(1)), _angle(m.group(2))) if m else None
+    m = re.search(r"Barrel about to explode (\d+) units away, ([^.]+)\.", s)
+    f["burst"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     m = re.search(r"Out of sight: (\d+) shooters? seen ([\d.]+) s ago, nearest (\d+) away, ([^.]+)\.", s)
     f["unseen"] = (int(m.group(1)), float(m.group(2)), float(m.group(3)), _angle(m.group(4))) if m else None
     m = re.search(r"Being shot from out of view, ([^.]+)\.", s)
@@ -226,6 +229,13 @@ def _decide(f: dict) -> str:
         return "use"
     if goal == "switch" and ahead[1] == "switch" and ahead[0] <= USE_REACH:
         return "use"
+    # A barrel that was hit blows up 0.4 s later: every unit of distance is a point of health (E1M7's start:
+    # deaths at 53-71 health beside a barrel a stray shot had set off).
+    burst = f["burst"]
+    if burst is not None and burst[1] is not None and burst[0] < BURST_FLEE:
+        move = _away_from(f, burst[1], flee=True)
+        if move is not None:
+            return move
     # An item with a monster close by: fight first (E1M8 seed 3 at 100 ms: a demon 47 units
     # away in the crosshair, shotgun ready, and the expert pushed toward a box of shells behind it for 7 s,
     # 183 -> 21 health). The goal is still there afterwards.
@@ -565,8 +575,9 @@ def _priority(e: dict) -> float:
     return e["dist"] * (0.6 if e["kind"] == "shotgun guy" else 1.0) - (40 if e["crosshair"] and e["kind"] not in BOSSES else 0)
 
 
-def _away_from(f: dict, angle: float) -> str | None:
-    """A move that takes the player away from a spot at this bearing without turning, if there is room."""
+def _away_from(f: dict, angle: float, flee: bool = False) -> str | None:
+    """A move that takes the player away from a spot at this bearing without turning, if there is room.
+    flee: from a blast, walking toward a monster ahead is allowed."""
     if abs(angle) <= 45:
         cands = ["back", "strafe_right" if angle > 0 else "strafe_left"]
     elif abs(angle) >= 135:
@@ -575,7 +586,7 @@ def _away_from(f: dict, angle: float) -> str | None:
         cands = ["strafe_right" if angle > 0 else "strafe_left", "back" if abs(angle) < 90 else "forward"]
     # Not toward a monster in front (E1M7's start: away from a barrel behind meant walking into a spectre).
     # Gunmen ahead are no reason to stay by the barrel: walking toward them does not add to their fire.
-    if any(e["angle"] is not None and abs(e["angle"]) <= 45 and e["kind"] not in HITSCAN
+    if not flee and any(e["angle"] is not None and abs(e["angle"]) <= 45 and e["kind"] not in HITSCAN
            and e["dist"] <= (300 if e["kind"] in MELEE else 160) for e in f["enemies"]):
         cands = [c for c in cands if c != "forward"] + (["strafe_left", "strafe_right"] if "forward" in cands else [])
     ray = {"back": "behind", "forward": "ahead", "strafe_left": "60 left", "strafe_right": "60 right"}
