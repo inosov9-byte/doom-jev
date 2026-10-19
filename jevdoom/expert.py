@@ -213,7 +213,9 @@ def _decide(f: dict) -> str:
 
     goal = f["goal"]
     # 1. the current goal up close: exit switch / switch (use), switch to shoot (fire), key or trigger line (walk on)
-    if ahead[1].startswith("exit switch") and ahead[0] <= USE_REACH:
+    # The centre ray, not a shoulder: use acts straight ahead (E1M1 seed 28: the switch at the right shoulder
+    # 5 units off, the goal 118 degrees right, use pressed for 45 s).
+    if ahead[1].startswith("exit switch") and "shoulder" not in ahead[1] and ahead[0] <= USE_REACH:
         return "use"
     if goal == "switch" and ahead[1] == "switch" and ahead[0] <= USE_REACH:
         return "use"
