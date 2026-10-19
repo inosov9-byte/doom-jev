@@ -370,25 +370,35 @@ def _cheap_supplies(m: MapData, goals: list[Subgoal], start: tuple[float, float]
     return out
 
 
-def walk_open_grid(g: NavGrid, pos: tuple[float, float]) -> NavGrid | None:
-    """The grid with the doors open whose walk-over trigger lines the player can reach from pos, or None if
-    there are none. The way out of a pit often runs over one (E1M5: from the nukage pool below the bridge, a
-    manual door, a corridor and a WR line that opens the door back to the start)."""
-    m, opened = g.m, set()
-    while True:
-        reach = g.reachable(pos)
-        tags = set()
-        for l in m.lines:
-            if DOOR_TRIGGERS.get(l.special) == "W" and l.tag and l.tag not in opened:
-                pts, _ = _stand_points(l, 24.0)
-                if any(0 <= (rc := g.to_cell(*p))[0] < g.h and 0 <= rc[1] < g.w and reach[rc] for p in pts):
-                    tags.add(l.tag)
-        if not tags:
-            break
-        opened |= tags
-        doors = m.door_sectors | {i for i, t in enumerate(m.sector_tag) if t in opened}
-        g = NavGrid(dataclasses.replace(m, door_sectors=doors))
-    return g if opened else None
+def trigger_route(g: NavGrid, a: tuple[float, float], b: tuple[float, float], max_expand: int = 200_000):
+    """(route, index of the point past the line) for a route a -> b that first crosses a walk-over line
+    opening doors shut in g, or None. After a fall the
+    way out can run through such a door (E1M5: from the nukage pool below the bridge, a manual door, a
+    corridor, then a WR line that opens the door back to the start); a door that opened for a few seconds
+    can have shut again (E1M4: the blue key room's doors, opened from outside by a WR line, closed behind
+    the expert; the WR box around the key opens them for good)."""
+    from .wadmap import path_length
+    m, reach, best = g.m, g.reachable(a), None
+    inside = lambda p: 0 <= (rc := g.to_cell(*p))[0] < g.h and 0 <= rc[1] < g.w and reach[rc]
+    for tag in {l.tag for l in m.lines if DOOR_TRIGGERS.get(l.special) == "W" and l.tag}:
+        secs = {i for i, t in enumerate(m.sector_tag) if t == tag}
+        if secs <= m.door_sectors:
+            continue
+        cands = [(l, [p for p in _stand_points(l, 24.0)[0] if inside(p)])
+                 for l in m.lines if l.tag == tag and DOOR_TRIGGERS.get(l.special) == "W"]
+        cands = [(l, pts) for l, pts in cands if pts]
+        if not cands:
+            continue
+        l, pts = min(cands, key=lambda c: min(math.dist(a, p) for p in c[1]))
+        heads = [h for h in (g.plan(a, p, max_expand) for p in pts) if h]
+        if not heads:
+            continue
+        head = max(heads, key=path_length)          # the far side: the walk crosses the line
+        g2 = NavGrid(dataclasses.replace(m, door_sectors=m.door_sectors | secs))
+        tail = g2.plan(head[-1], b, max_expand)
+        if tail and (best is None or path_length(head) + path_length(tail) < best[0]):
+            best = (path_length(head) + path_length(tail), head + tail[1:], len(head) - 1)
+    return best and best[1:]
 
 
 def stage_grids(m: MapData, goals: list[Subgoal], strict_lifts: bool = False) -> list[NavGrid]:

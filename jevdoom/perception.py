@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 from .env import DECOR_NAMES, MONSTER_NAMES, SOLID_DECOR, PICKUP_NAMES, WEAPON_NAMES, Obs
-from .progression import DOOR_TRIGGERS, KEY_DOORS, KEY_THINGS, LIFT_TRIGGERS, Subgoal, walk_open_grid
+from .progression import DOOR_TRIGGERS, KEY_DOORS, KEY_THINGS, LIFT_TRIGGERS, Subgoal, trigger_route
 from .wadmap import DAMAGE_SECTORS, DOOR_SPECIALS, EXIT_SPECIALS, MAX_STEP, PLAYER_HEIGHT, NavGrid, exit_target, path_length
 
 RAYS = [("ahead", 0), ("30 left", 30), ("60 left", 60), ("30 right", -30), ("60 right", -60), ("behind", 180)]
@@ -60,11 +60,13 @@ class Perception:
         self.lift_sectors_all = {sd for i in self.lift_walls for sd in (L[i].front, L[i].back)}
         self.lift_floor_prev: dict[int, float] = {}  # lift sector -> floor at the previous description
         self.route: list | None = None
+        self.via: int | None = None                    # route index just past a trigger line it must cross
         self.idx = 0
         self.prev: Obs | None = None
         self.prev_cmd: str | None = None
         self.history: list[tuple[str, float]] = []   # (command, units moved) for recent decisions
         self.door_ceil_prev: dict[int, float] = {}   # door sector -> ceiling height at the previous description
+        self.doors_seen_open: set[int] = set()
         self.live_grids: dict[int, NavGrid] = {}     # stage -> grid rebuilt from live sector heights
         self._stand_cache: tuple = (None, 0.0)
         self._reach: dict[tuple, tuple] = {}           # (id(grid), goal) -> (grid, cells the goal is reachable from)
@@ -354,7 +356,7 @@ class Perception:
                 return
             self.stage += 1
             r = self.stage_routes[self.stage] if self.stage < len(self.stage_routes) else None
-            self.route, self.idx = (list(r) if r else None), 0
+            self.route, self.idx, self.via = (list(r) if r else None), 0, None
 
     def route_bearing(self, obs: Obs) -> float | None:
         """Bearing the compass would report (positive = left), or None without a route."""
@@ -394,14 +396,19 @@ class Perception:
         # A floor moved by a trigger is a lift while it moves; settled at its end height it is plain floor again.
         settled = {i for i in base.m.moved_sectors & base.m.lift_sectors
                    if i in obs.heights and abs(obs.heights[i][0] - wm.floor[i]) < 1}
-        if not changed and not settled:
+        # A tagged door seen open that has shut again and stays shut: closed until something reopens it.
+        reclosed = {i for i in wm.door_sectors & self.doors_seen_open
+                    if self.m.sector_tag[i] and i in obs.heights and obs.heights[i][1] - obs.heights[i][0] < PLAYER_HEIGHT
+                    and abs(obs.heights[i][1] - self.door_ceil_prev.get(i, -1e9)) < 1}
+        if not changed and not settled and reclosed == wm.door_sectors - base.m.door_sectors:
             return base
         floor, ceil = wm.floor.copy(), wm.ceil.copy()
         for i, (f, c) in obs.heights.items():
             if i not in skip and i < len(floor):
                 floor[i], ceil[i] = f, c
         lifts = wm.lift_sectors - settled - (wm.moved_sectors - base.m.lift_sectors)
-        self.live_grids[stage] = NavGrid(dataclasses.replace(wm, floor=floor, ceil=ceil, lift_sectors=lifts))
+        self.live_grids[stage] = NavGrid(dataclasses.replace(wm, floor=floor, ceil=ceil, lift_sectors=lifts,
+                                                             door_sectors=wm.door_sectors - reclosed))
         self.replan = True                            # keep the old route until the new one is ready
         return self.live_grids[stage]
 
@@ -427,7 +434,7 @@ class Perception:
 
     def _submit(self, kind: str, grid: NavGrid, a, b, max_expand: int = 200_000) -> None:
         if self._job is None:
-            fn = _plan_or_walk_open if kind == "route" else grid.plan
+            fn = _plan_or_trigger if kind == "route" else grid.plan
             self._job = (self._planner.submit(fn, grid, a, b, max_expand) if kind == "route"
                          else self._planner.submit(fn, a, b, max_expand), kind, self.stage)
 
@@ -439,8 +446,11 @@ class Perception:
         res = fut.result()
         if stage != self.stage:
             return                                    # planned for a finished stage
+        via = None
+        if kind == "route":
+            res, via = res
         if res:
-            self.route, self.idx = res, 0
+            self.route, self.idx, self.via = res, 0, via
         elif kind == "route":
             self.plan_fail_tic = obs.tic
 
@@ -459,8 +469,13 @@ class Perception:
             if self.route:
                 gpos = self.route[-1]
         off = 0.0
+        if self.via is not None and self.idx >= self.via:
+            self.via = None
+        # Until the player is past a trigger line on the route, neither tracking nor shortcuts skip the
+        # crossing (the way back runs right beside the way there).
+        cap = len(self.route) if self.route and self.via is None else (self.via + 1 if self.route else 0)
         if self.route:
-            lo, hi = self.idx, min(len(self.route), self.idx + 60)
+            lo, hi = self.idx, min(cap, self.idx + 60)
             best = min(range(lo, hi), key=lambda i: math.dist(pos, self.route[i]))
             self.idx = best
             off = math.dist(pos, self.route[best])
@@ -472,7 +487,7 @@ class Perception:
             return None
         path = self.route
         target = path[min(self.idx + 1, len(path) - 1)]
-        for j in range(min(self.idx + 14, len(path) - 1), self.idx, -2):
+        for j in range(min(self.idx + 14, cap - 1), self.idx, -2):
             # Current stage: later stages may open doors still shut now. Clear of drop edges: a straight
             # line hugging an edge took the expert off E1M3's walkway at the bends.
             if grid.walkable_line(pos, path[j], keep_off_drops=True):
@@ -599,12 +614,15 @@ class Perception:
             parts.append(note + (f", took {dmg:.0f} damage." if dmg > 0 else "."))
         self.prev = obs
         self.door_ceil_prev = {sec: obs.heights[sec][1] for sec in self.m.door_sectors if sec in obs.heights}
+        self.doors_seen_open |= {sec for sec, (f, c) in obs.heights.items()
+                                 if sec in self.m.door_sectors and c - f >= PLAYER_HEIGHT}
         self.lift_floor_prev = {sec: obs.heights[sec][0] for sec in self.lift_sectors_all if sec in obs.heights}
         return " ".join(parts)
 
     def reset(self) -> None:
-        self.route, self.idx, self.prev = None, 0, None
+        self.route, self.idx, self.prev, self.via = None, 0, None, None
         self.door_ceil_prev = {}
+        self.doors_seen_open = set()
         self.lift_floor_prev = {}
         self.history = []
         self.stage = 0
@@ -612,14 +630,10 @@ class Perception:
         self._job = None
 
 
-def _plan_or_walk_open(grid: NavGrid, a, b, max_expand: int):
-    """A route on the stage grid, or else one through doors opened by walk-over lines on the way (after a
-    fall into a pit the stage grid has no way out; E1M5's pool below the bridge)."""
+def _plan_or_trigger(grid: NavGrid, a, b, max_expand: int):
+    """A route on the stage grid, or else one over a walk-over line that opens a shut door (progression.py)."""
     path = grid.plan(a, b, max_expand)
-    if path is None:
-        g = walk_open_grid(grid, a)
-        path = g.plan(a, b, max_expand) if g is not None else None
-    return path
+    return (path, None) if path is not None else (trigger_route(grid, a, b, max_expand) or (None, None))
 
 
 def _side(b: float, ahead: float = 7.5) -> str:
