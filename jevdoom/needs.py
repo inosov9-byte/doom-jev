@@ -26,6 +26,7 @@ LABEL = {"Stimpack": "stimpack", "Medikit": "medikit", "GreenArmor": "green armo
          "Shell": "shells", "ShellBox": "box of shells", "Shotgun": "shotgun", "Clip": "ammo clip",
          "ClipBox": "box of bullets", "Chaingun": "chaingun"}
 
+RETRY_TICS = 175          # an item too far by path is looked at again after 5 s
 CHECK_TICS = 17           # look for a need at most twice a second
 MONSTER_CLEAR = 350       # skip items with a living monster this close (a detour into an uncleared room)
 TOPUP_LEFT = 2000.0       # route units left to the exit when the top-up starts
@@ -40,7 +41,7 @@ def wanted(obs: Obs, exit_stage: bool, carry: bool) -> list[tuple[set[str], floa
     if obs.health < 50:
         out.append((set(HEALTH), 450.0 if obs.health < 30 else 350.0))
     if shells < 4 and obs.bullets < 30:
-        out.append((set(SHELLS) | set(BULLETS), 450.0))
+        out.append(((set(SHELLS) if obs.has_shotgun else {"Shotgun"}) | set(BULLETS), 450.0))
     if carry and exit_stage:
         if obs.health < 80:
             out.append(({n for n, v in HEALTH.items() if obs.health + v <= 105 or obs.health < 60}, 700.0))
@@ -61,7 +62,7 @@ class Needs:
         self.deadline = 0
         self.saved = None                     # stage route (route, idx, via) to restore afterwards
         self.check_tic = -10**9
-        self.skip: set[int] = set()           # items given up on (unreachable, too far, timed out)
+        self.skip: dict[int, int] = {}        # item id -> tic until which it is not considered
         self._pool = ThreadPoolExecutor(max_workers=1)
         self._job = None                      # (future, thing, limit, stage)
         self.log: list[tuple] = []            # (tic, event, item) for summaries
@@ -72,8 +73,8 @@ class Needs:
             alive = any(p.id == self.item_id for p in obs.pickups)
             if alive and obs.dist_to(*self.goal.pos) >= 40 and obs.tic < self.deadline:
                 return True
-            if alive and obs.tic >= self.deadline:
-                self.skip.add(self.item_id)
+            if alive:                             # timed out, or reached and not taken (not needed)
+                self.skip[self.item_id] = 10**9
             self.log.append((obs.tic, "taken" if not alive else "timeout" if obs.tic >= self.deadline else "arrived",
                              self.goal.label))
             self._finish(perc)
@@ -92,7 +93,7 @@ class Needs:
                     and not self._hazard(perc, path)):
                 self._start(perc, obs, thing, path)
                 return True
-            self.skip.add(thing.id)
+            self.skip[thing.id] = obs.tic + RETRY_TICS     # too far from here: maybe later
             return False
         if obs.tic - self.check_tic < CHECK_TICS or any(m.visible for m in obs.monsters):
             return False                          # not in the middle of a fight
@@ -100,7 +101,7 @@ class Needs:
         best = None
         for names, limit in wanted(obs, exit_stage, self.carry):
             for p in obs.pickups:
-                if p.name not in names or p.id in self.skip:
+                if p.name not in names or self.skip.get(p.id, -1) > obs.tic:
                     continue
                 d = obs.dist_to(p.x, p.y)
                 if d > limit or any(math.hypot(m.x - p.x, m.y - p.y) < MONSTER_CLEAR for m in obs.monsters):
@@ -114,7 +115,7 @@ class Needs:
         r, c = grid.to_cell(thing.x, thing.y)
         if (not (0 <= r < grid.h and 0 <= c < grid.w) or grid.near_drop[max(r - 2, 0):r + 3, max(c - 2, 0):c + 3].any()
                 or perc._in_pit(obs, thing.x, thing.y)):
-            self.skip.add(thing.id)               # beside a ledge or down a pit (E1M3's toxic walkway)
+            self.skip[thing.id] = 10**9           # beside a ledge or down a pit (E1M3's toxic walkway)
             return False
         self._job = (self._pool.submit(grid.plan, (obs.x, obs.y), (thing.x, thing.y), self.max_expand), thing, limit, stage)
         return False
