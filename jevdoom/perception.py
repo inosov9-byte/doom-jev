@@ -502,10 +502,27 @@ class Perception:
         left = math.dist(pos, path[self.idx]) + path_length(path[self.idx:])
         # Point at the goal itself only with a clear walk to its standing spot (E1M2 exit: within 120
         # units the direct line to the switch ran into a wall corner and the expert pushed into it).
-        self.at_goal = left < 120 and grid.walkable_line(pos, gpos)
+        self.at_goal = left < 120 and grid.walkable_line(pos, gpos) and self._before_switch(pos)
         if self.at_goal:
             target = self._goal_pos(obs)
         return target, left
+
+    def _before_switch(self, pos) -> bool:
+        """For a switch or exit switch: the player stands in front of its line, where use reaches it. Beside
+        the line the switch lies straight ahead along the wall and use hits nothing (E1M8: the stair switch
+        after the Barons; the expert pressed use from its side for 45 s)."""
+        g = self.goal
+        if g.kind not in ("switch", "exit") or g.pos == g.target:
+            return True
+        line = next((l for l in self.m.lines if math.dist(((l.v1[0] + l.v2[0]) / 2, (l.v1[1] + l.v2[1]) / 2), g.target) < 1), None)
+        if line is None:
+            return True
+        (x1, y1), (x2, y2) = line.v1, line.v2
+        dx, dy = x2 - x1, y2 - y1
+        n2 = dx * dx + dy * dy or 1.0
+        t = ((pos[0] - x1) * dx + (pos[1] - y1) * dy) / n2
+        side = ((pos[0] - x1) * dy - (pos[1] - y1) * dx) * ((g.pos[0] - x1) * dy - (g.pos[1] - y1) * dx)
+        return 0.0 <= t <= 1.0 and side > 0
 
     # -- text -----------------------------------------------------------------
     def describe(self, obs: Obs, last_cmd: str | None = None, health_override: float | None = None) -> str:
