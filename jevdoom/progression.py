@@ -85,7 +85,7 @@ def world(m: MapData, keys: frozenset, opened: frozenset, strict_lifts: bool = F
         else:
             lifts |= secs
     return dataclasses.replace(m, door_sectors=doors, lift_sectors=lifts, floor=floor, special=special,
-                               moved_sectors=moved, keys=frozenset(keys))
+                               moved_sectors=moved, keys=frozenset(keys), opened=frozenset(opened))
 
 
 STAIR_SPECIALS = {7: 8, 8: 8, 100: 16, 127: 16}   # stair builders -> step height (100, 127: turbo 16)
@@ -401,7 +401,7 @@ def trigger_route(g: NavGrid, a: tuple[float, float], b: tuple[float, float], ma
         if not heads:
             continue
         head = max(heads, key=path_length)          # the far side: the walk crosses the line
-        g2 = NavGrid(dataclasses.replace(m, door_sectors=m.door_sectors | secs))
+        g2 = NavGrid(dataclasses.replace(m, door_sectors=m.door_sectors | secs, opened=m.opened | {tag}))
         tail = g2.plan(head[-1], b, max_expand)
         if tail and (best is None or path_length(head) + path_length(tail) < best[0]):
             best = (path_length(head) + path_length(tail), head + tail[1:], len(head) - 1)

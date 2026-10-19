@@ -59,6 +59,7 @@ class MapData:
     floor_flat: list[str] | None = None                       # floor texture per sector (stair building follows it)
     moved_sectors: set[int] = field(default_factory=set)     # floors moved by a fired trigger, at their end height
     keys: frozenset = frozenset()                             # keys held in this world state (locked door faces)
+    opened: frozenset = frozenset()                           # trigger tags fired in this world state
 
     @property
     def exit_lines(self) -> list[Line]:
@@ -204,8 +205,11 @@ class NavGrid:
         out = []
         # A manual door opens only from a face that carries the door special: E1M5's door at (-576, 1200)
         # has a bare face on one side, and the expert pressed use on it until it died.
+        # A tagged door with a manual face is one-way too until its tag fires: E1M7's door at (1216, -2128)
+        # opens by hand from the south only; from the north only switch 103 (tag 14) opens it, and the
+        # planner routed through its bare face without visiting the switch.
         manual = {l.back for l in self.m.lines if l.special in DOOR_SPECIALS and l.back != -1
-                  and self.m.sector_tag[l.back] == 0}
+                  and (self.m.sector_tag[l.back] == 0 or self.m.sector_tag[l.back] not in self.m.opened)}
         # Crossing a teleport line from its front teleports the player (E1M5: the route skirted a teleport pad
         # and the expert was sent back 1,700 units each time it stepped in). End-level teleporters are goals.
         end_tags = {int(t) for t, sp in zip(self.m.sector_tag, self.m.special) if sp == END_LEVEL_SECTOR and t}
