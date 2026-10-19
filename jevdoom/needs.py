@@ -45,6 +45,8 @@ def wanted(obs: Obs, exit_stage: bool, carry: bool) -> list[tuple[set[str], floa
     shells = obs.shells if obs.has_shotgun else 0
     if obs.health < 40:
         out.append((set(HEALTH), 450.0 if obs.health < 25 else 350.0, False))
+    if obs.has_shotgun and shells < 6:     # shotgun nearly dry: shells on a short walk (E1M5 deaths out of shells)
+        out.append(({"Shell", "ShellBox"}, 300.0, False))
     if shells < 2 and obs.bullets < 15:
         out.append(((set(SHELLS) if obs.has_shotgun else {"Shotgun"}) | set(BULLETS), 400.0, False))
     if carry and exit_stage:
