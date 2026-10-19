@@ -137,6 +137,28 @@ def draw_panel(frame: np.ndarray, info: dict) -> np.ndarray:
     return np.hstack([frame, panel])
 
 
+AUDIO_RATE = 44100
+
+
+def _mux_audio(run_dir: Path, chunks: list) -> None:
+    """One audio chunk per video frame (rate/35 samples): write run.wav and mux it into run.mp4."""
+    import wave
+    n = AUDIO_RATE // TICRATE
+    pcm = np.concatenate([c if c is not None else np.zeros((n, 2), np.int16) for c in chunks]).astype(np.int16)
+    wav = run_dir / "run.wav"
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(AUDIO_RATE)
+        w.writeframes(pcm.tobytes())
+    silent, tmp = run_dir / "run.mp4", run_dir / "run.sound.mp4"
+    r = subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(silent), "-i", str(wav), "-map", "0:v:0",
+                        "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+                        str(tmp)])
+    if r.returncode == 0:
+        tmp.replace(silent)
+
+
 def git_commit() -> str:
     try:
         sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip()
@@ -151,8 +173,10 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
         skill: int = 3, local_url: str = LOCAL_URL, timeout: int = 300, window: bool = False,
         record_video: bool = False, runs_dir: str = "runs", compass: bool = True, dry_run: bool = False,
         engine: Engine | None = None, stepped: bool = False, quiet: bool = False, stuck_s: float = 45.0,
-        loadout: dict | None = None) -> dict:
-    """stepped=True: the game waits for every decision (no real time, no worker thread). For
+        loadout: dict | None = None, sound: bool = False) -> dict:
+    """sound=True (with record_video): capture game audio through ViZDoom's audio buffer and mux it
+    into run.mp4 (AAC). The game runs in sync mode either way, so game behaviour is unchanged.
+    stepped=True: the game waits for every decision (no real time, no worker thread). For
     developing the rules expert and recording expert trajectories; not used for the comparison.
     loadout: the state carried in from the previous level (loadout.py); None = pistol start."""
     engine = engine or make_engine(arm, local_url=local_url, dry_run=dry_run, seed=seed or 0)
@@ -180,7 +204,10 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     perc = Perception(grid, compass=compass, goals=goals, stage_grids=grids, stage_routes=stage_routes)
     total_route = sum(stage_len)
 
-    g = make_game(wad, map_name, skill, visible=window, timeout_s=timeout, seed=seed, cheats=loadout is not None)
+    sound = sound and record_video
+    g = make_game(wad, map_name, skill, visible=window, timeout_s=timeout, seed=seed, cheats=loadout is not None,
+                  audio_rate=AUDIO_RATE if sound else None)
+    audio: list = []
     g.new_episode()
     if loadout:
         apply_loadout(g, loadout)
@@ -277,6 +304,8 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
             if ffmpeg is not None and obs.screen is not None:
                 info.update(t=tic / TICRATE, health=obs.health, kills=obs.kills)
                 ffmpeg.stdin.write(draw_panel(obs.screen, info).tobytes())
+                if sound:
+                    audio.append(obs.audio)
             if not stepped:
                 target = t_start + tic / TICRATE               # hold real time: 35 tics per second
                 delay = target - time.perf_counter()
@@ -300,6 +329,8 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
         if ffmpeg is not None:
             ffmpeg.stdin.close()
             ffmpeg.wait()
+            if sound and audio:
+                _mux_audio(run_dir, audio)
         wall = time.perf_counter() - t_start
         lat_sorted = sorted(lat)
         summary = {"arm": arm, "seed": seed, "outcome": outcome,
@@ -333,6 +364,7 @@ def main(argv=None):
     ap.add_argument("--timeout", type=int, default=300, help="episode limit in seconds of game time")
     ap.add_argument("--window", action="store_true", help="show the game window")
     ap.add_argument("--record-video", action="store_true")
+    ap.add_argument("--sound", action="store_true", help="with --record-video: capture game audio into run.mp4")
     ap.add_argument("--runs", default="runs")
     ap.add_argument("--no-compass", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="mock engine with the arm's latency profile; free")
@@ -342,7 +374,7 @@ def main(argv=None):
     s = run(args.arm, args.seed, wad=args.wad, map_name=args.map, skill=args.skill, local_url=args.local_url,
             timeout=args.timeout, window=args.window, record_video=args.record_video, runs_dir=args.runs,
             compass=not args.no_compass, dry_run=args.dry_run, stepped=args.stepped,
-            loadout=load_loadout(args.loadout, args.map))
+            loadout=load_loadout(args.loadout, args.map), sound=args.sound)
     print(json.dumps(s, indent=2))
 
 
