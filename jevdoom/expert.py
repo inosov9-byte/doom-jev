@@ -498,7 +498,10 @@ def _decide(f: dict) -> str:
 
     # 7. a lift: the route goes up a ledge too high to climb right in front: press use to lower it.
     #    A lift wall (manual lift line, E1M8 before the Barons) is used once, then walked onto as it lowers.
-    if ahead[1].startswith("ledge too high") and ahead[0] <= USE_REACH and f["blocked"]:
+    #    Standing on a lowered lift with the ledge ahead: wait for it to rise ("use" against the ledge does
+    #    nothing else). The unstick sidestep below carried the player off before it rose (E1M7's lift to the
+    #    yellow key: 7 of 16 runs at 50 ms circled it under imp fire until they died).
+    if ahead[1].startswith("ledge too high") and ahead[0] <= USE_REACH and (f["blocked"] or f["on_lift"]):
         return "use"
     if ahead[1].startswith("lift (raised)") and ahead[0] <= USE_REACH:
         return _lift_blocked(f) if f["on_lift"] else "use"
