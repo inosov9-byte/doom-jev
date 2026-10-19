@@ -345,6 +345,23 @@ def _decide(f: dict) -> str:
                 turn = turn_toward(t["angle"])
                 if turn.endswith(("_5", "_15", "_30")):
                     return turn + "_fire"
+    # On the edge of a drop with no way back the fight rules are off (no dodging, no stopping to aim), but a
+    # ready shotgun still shoots a gunman or imp that needs no more than a small turn: neither moves the player.
+    # E1M3's walkway between the toxic pits: shotgun guys and imps in the crosshair at 300-450 for seconds while
+    # the teacher turned back and forth beside a barrel, 72 -> 39 and 78 -> 39 without a shot.
+    if edge and has_ammo and f["weapon"] == "shotgun" and f["reload"] <= RELOAD_DODGE and not threats:
+        snipe = [e for e in f["enemies"] if e["angle"] is not None and abs(e["angle"]) <= 30 and (
+                 e["kind"] in HITSCAN and e["dist"] <= HITSCAN_ENGAGE or e["kind"] == "imp" and e["dist"] <= IMP_ENGAGE)]
+        if snipe:
+            t = min(snipe, key=_priority)
+            ahead_barrel = ahead[1].startswith("barrel") and ahead[0] < BARREL_BLAST
+            if not ahead_barrel and not any(kind.startswith("barrel") and d < BARREL_BLAST and abs(RAY_ANGLES[k] - t["angle"]) <= 30
+                                            for k, (d, kind) in f["rays"].items() if k in RAY_ANGLES):
+                if t["crosshair"]:
+                    return "fire"
+                turn = turn_toward(t["angle"])
+                if turn.endswith(("_5", "_15", "_30")):
+                    return turn + "_fire"
     if threats:
         t = min(threats, key=_priority)
         # A barrel in the firing cone inside its blast radius takes the shot, shotgun spread included
