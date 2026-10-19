@@ -299,10 +299,11 @@ SUPPLIES = {2049: "box of shells", 2018: "green armor", 2012: "medikit", 2013: "
 MAX_SUPPLY_DETOUR = 1500.0
 
 
-# Without a boss: shells on cheap detours, when a shotgun is carried in (E1M4 starts with 15 shells; the
-# expert ran dry by 25-35 s and died to imps, a box of shells 241 units off the first stretch). Health and
-# armor detours were tried on E1M5: more time in fights, earlier deaths.
-CHEAP_SUPPLIES = {2049: ("box of shells", 600.0), 2008: ("shells", 200.0)}
+# Without a boss: boxes of shells on cheap detours, when a shotgun is carried in (E1M4 starts with 15 shells;
+# the expert ran dry by 25-35 s and died to imps, a box of shells 241 units off the first stretch). Tried and
+# dropped: single shells (+4; E1M3's opening detour shifted the walkway fight and lost 2 of 4 seeds) and
+# health or armor (E1M5: more time in fights, earlier deaths).
+CHEAP_SUPPLIES = {2049: ("box of shells", 600.0)}
 
 
 def with_supply_detours(m: MapData, goals: list[Subgoal], start: tuple[float, float],
