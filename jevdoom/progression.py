@@ -10,6 +10,8 @@ from __future__ import annotations
 import dataclasses
 import math
 import os
+
+import numpy as np
 from collections import deque
 from dataclasses import dataclass
 
@@ -396,7 +398,10 @@ ENABLED = {2013, 2019, 2002, 2003, 8}        # worth a key or a trigger on the w
 ENABLER_COST = 300.0                         # an extra key or trigger stage costs this much on top of the walk
 WEAPON_THING = {2001: "shotgun", 2002: "chaingun", 2003: "rocket launcher"}
 RESOURCE_CACHE = os.environ.get("JEV_RESOURCE_CACHE", r"C:\tmp\jev-doom\cache\resources")
-RESOURCE_VERSION = 4
+MONSTER_THINGS = {3004, 9, 3001, 3002, 58, 3006, 3005, 3003}
+MON_NEAR, MON_CLOSER = 400.0, 250.0          # a monster this close to the detour, and this much closer than to the route
+MON_COST, MON_MAX = 250.0, 3                 # adds this much to the detour; this many rule the item out
+RESOURCE_VERSION = 6
 
 
 def _on_skill(t) -> bool:
@@ -495,6 +500,20 @@ def _plan_resources(m: MapData, goals: list[Subgoal], start: tuple[float, float]
             enablers[i] = out
         return enablers[i]
 
+    mons = np.array([(t[0], t[1]) for t in m.things if t[3] in MONSTER_THINGS and _on_skill(t)], float).reshape(-1, 2)
+
+    def guards(base, *paths) -> int:
+        """Monsters the detour walks up to (within MON_NEAR) and passes MON_CLOSER units closer than the stage
+        route does: fights the plan would add (E1M4: the blue armor room's shotgun guys killed 3 of 9 runs;
+        straight-line distances, so a monster behind a wall from the route still counts as off it)."""
+        if not len(mons):
+            return 0
+        def dist(ps):
+            pts = np.array([q for p in ps for q in p[::2]], float)
+            return np.sqrt(((mons[:, None, :] - pts[None, :, :]) ** 2).sum(-1)).min(1)
+        d_det, d_base = dist(paths), dist([base])
+        return int(((d_det < MON_NEAR) & (d_base - d_det > MON_CLOSER)).sum())
+
     def hazard(gr, base, *paths):
         """The detour crosses a damaging floor the stage route itself does not (E1M4: the first stretch
         crosses nukage anyway; the box of shells beside the start was dropped for it)."""
@@ -524,8 +543,8 @@ def _plan_resources(m: MapData, goals: list[Subgoal], start: tuple[float, float]
                 if math.dist(a, pos) + math.dist(pos, g.pos) - bl > limit:
                     continue
                 p1, p2 = gr.plan(a, pos), gr.plan(pos, g.pos)
-                if p1 and p2 and not hazard(gr, base, p1, p2):
-                    cands.append((i, path_length(p1) + path_length(p2) - bl, []))
+                if p1 and p2 and not hazard(gr, base, p1, p2) and (n := guards(base, p1, p2)) < MON_MAX:
+                    cands.append((i, path_length(p1) + path_length(p2) - bl + MON_COST * n, []))
             elif t[3] in ENABLED:
                 for chain, g2, r2 in stage_enablers(i):
                     pts = [a] + [sg.pos for sg, _ in chain] + [pos, g.pos]
@@ -535,14 +554,17 @@ def _plan_resources(m: MapData, goals: list[Subgoal], start: tuple[float, float]
                         continue
                     legs = [gx.plan(pts[j], pts[j + 1]) for j, (_, gx) in enumerate(chain)]
                     legs += [g2.plan(chain[-1][0].pos, pos), g2.plan(pos, g.pos)]
-                    if all(legs) and not hazard(g2, base, *legs):
-                        cands.append((i, sum(map(path_length, legs)) - bl + extra_cost, [sg for sg, _ in chain]))
+                    if all(legs) and not hazard(g2, base, *legs) and (n := guards(base, *legs)) < MON_MAX:
+                        cands.append((i, sum(map(path_length, legs)) - bl + extra_cost + MON_COST * n,
+                                      [sg for sg, _ in chain]))
         cands = [c for c in cands if c[1] <= limit]
         if not cands:
             continue
         # Armor: the earliest stage within the limit (fights after it are fought with armor on); else cheapest.
         best = min(cands, key=lambda c: (c[0], c[1])) if need.startswith("armor") else min(cands, key=lambda c: c[1])
         picks.append((best[0], best[1], best[2] + [Subgoal("item", label, pos, pos)], need))
+        if os.environ.get("JEV_RESOURCE_DEBUG"):
+            print(f"  {m.name} {label} {pos} stage {best[0]} cost {best[1]:.0f} via {[g.label for g in best[2]]}")
     # one enabler per (stage, key/tag): two items behind the same door share it
     per_stage: dict[int, list] = {}
     for n, (i, extra, sgs, need) in enumerate(sorted(picks, key=lambda p: (p[0], p[1]))):
