@@ -367,6 +367,13 @@ class NavGrid:
                     continue
                 if not self._edge_ok(r, c, rr, cc):
                     continue
+                # A diagonal step through the exact end point of an impassable two-sided line crosses it without
+                # the crossing test seeing it (E1M7: routes off the rocket launcher platform ran through the corner
+                # at (0, -960) into the room 112 units below its floor; 9 of 48 runs stuck there for 45 s). One of
+                # the two orthogonal ways round the corner must be open too.
+                if dr and dc and not (self._edge_ok(r, c, r, cc) and self._edge_ok(r, cc, rr, cc)
+                                      or self._edge_ok(r, c, rr, c) and self._edge_ok(rr, c, rr, cc)):
+                    continue
                 nc = cost + w * self.cost[rr, cc]
                 if nc < gcost.get((rr, cc), math.inf):
                     gcost[(rr, cc)] = nc

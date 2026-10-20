@@ -401,7 +401,7 @@ RESOURCE_CACHE = os.environ.get("JEV_RESOURCE_CACHE", r"C:\tmp\jev-doom\cache\re
 MONSTER_THINGS = {3004, 9, 3001, 3002, 58, 3006, 3005, 3003}
 MON_NEAR, MON_CLOSER = 400.0, 250.0          # a monster this close to the detour, and this much closer than to the route
 MON_COST, MON_MAX = 250.0, 3                 # adds this much to the detour; this many rule the item out
-RESOURCE_VERSION = 6
+RESOURCE_VERSION = 7
 
 
 def _on_skill(t) -> bool:
