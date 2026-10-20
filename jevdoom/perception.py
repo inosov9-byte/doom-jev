@@ -69,10 +69,13 @@ class Perception:
         self.prev_cmd: str | None = None
         self.history: list[tuple[str, float]] = []   # (command, units moved) for recent decisions
         self.seen: dict[int, tuple[int, float, float]] = {}   # shooter id -> (tic, x, y) last seen in the line of fire
+        self.barrels: dict[int, tuple[float, float]] = {}     # barrel id -> position at the previous description
+        self.bursting: dict[int, tuple[int, float, float]] = {}   # barrel id -> (tic noticed, x, y): hit, not yet blown
         self.door_ceil_prev: dict[int, float] = {}   # door sector -> ceiling height at the previous description
         self.doors_seen_open: set[int] = set()
         self.live_grids: dict[int, NavGrid] = {}     # stage -> grid rebuilt from live sector heights
         self._stand_cache: tuple = (None, 0.0)
+        self._lines_at: dict = {}                      # switch target point -> its line
         self._reach: dict[tuple, tuple] = {}           # (id(grid), goal) -> (grid, cells the goal is reachable from)
         self.at_goal = False                          # close to the goal with a clear walk to it
         self.live_check_tic = -10**9
@@ -163,14 +166,20 @@ class Perception:
                         eta = max(0.0, (self.grid.ceil_s[door] - now) / 2 / 35)
                         state = f"opening, fully open in about {max(0.5, round(eta * 2) / 2):g} s"
                     return d, f"door ({state})", nukage, thing
-                if i in self.lift_walls:              # the raised lift itself (E1M8: special 62 before the Barons)
+                # The raised lift itself (E1M8: special 62 before the Barons), seen from the switch side: Doom uses
+                # a line from its front only. Seen across the lift from beside it, the face is a wall and use does
+                # nothing (E1M2's exit lift: a run stood beside it pressing use for 45 s, 3 units short of the
+                # walk-over line that lowers it). Standing on the lift itself it still reads as the lift, so the
+                # teacher steps off and back on (E1M2's exit and 83% lifts: on the risen lift, the face read as a
+                # wall and the route pushed forward into it).
+                if i in self.lift_walls and self._lift_face(i, cur, nxt, obs):
                     return d, self._lift_state(obs, nxt), nukage, thing
                 return d, "wall", nukage, thing
             if nf - cf > MAX_STEP:
                 # A lift under a high ceiling reads as a ledge, not a wall (E1M5: the lift at the top of the
                 # stairs to the teleport room; the expert slid along its face for 20 s without pressing use).
                 # Only when the lift is the far side: E1M2's exit lift has a switch face toward the step above.
-                if i in self.lift_walls and self.m.sector_tag[nxt] == self.m.lines[i].tag:
+                if i in self.lift_walls and self._lift_face(i, cur, nxt, obs):
                     return d, self._lift_state(obs, nxt), nukage, thing
                 return d, "ledge too high to climb", nukage, thing
             if cf - nf > MAX_STEP and self._dead_end(ox + dx * (d + 12), oy + dy * (d + 12)):
@@ -178,6 +187,14 @@ class Perception:
             if nukage is None and self.m.special[nxt] in DAMAGE_SECTORS:
                 nukage = d
         return float(MAX_RAY), "open", nukage, thing
+
+    def _lift_face(self, i: int, cur: int, nxt: int, obs: Obs) -> bool:
+        """Lift line i, crossed from sector cur into nxt, reads as the lift: from its front with the lift beyond,
+        or with the player standing on the lift (cur) itself."""
+        tag = self.m.lines[i].tag
+        if cur == int(self.front[i]) and self.m.sector_tag[nxt] == tag:
+            return True
+        return self.m.sector_tag[cur] == tag and self.grid.sector_at(obs.x, obs.y) == cur
 
     def _lift_state(self, obs: Obs, lift: int) -> str:
         before = self.lift_floor_prev.get(lift)
@@ -308,6 +325,8 @@ class Perception:
                     best = (score, float(d), obs.bearing_to(*p))
         return None if best is None else (best[1], best[2])
 
+    BURST_TICS = 14           # a barrel blows up 14 tics after it is killed
+    BURST_NEAR = 250          # blast reach 128 + 16 along each axis: up to ~205 units diagonally
     BARREL_NEAR = 200         # report the nearest barrel this close (blast reach 128 + 16 along each axis, more diagonally)
     DODGE_HORIZON = 1.2      # seconds ahead a projectile is worth reporting
     DODGE_MISS = 44.0         # closest approach that still hits: player radius 16 + fireball ~8-16, margin
@@ -513,16 +532,39 @@ class Perception:
         self.at_goal = left < 120 and grid.walkable_line(pos, gpos) and self._before_switch(pos)
         if self.at_goal:
             target = self._goal_pos(obs)
+            line = self._goal_line()
+            if line is not None:
+                target = self._line_aim(line, pos)
         return target, left
+
+    def _goal_line(self):
+        """The switch line of a switch or exit goal (its target is the line's midpoint), or None."""
+        g = self.goal
+        if g.kind not in ("switch", "exit") or g.pos == g.target:
+            return None
+        if tuple(g.target) not in self._lines_at:
+            self._lines_at[tuple(g.target)] = next((l for l in self.m.lines if math.dist(
+                ((l.v1[0] + l.v2[0]) / 2, (l.v1[1] + l.v2[1]) / 2), g.target) < 1), None)
+        return self._lines_at[tuple(g.target)]
+
+    @staticmethod
+    def _line_aim(line, pos) -> tuple[float, float]:
+        """The point of a switch line nearest the player, kept 24 units in from its ends. Use reaches 64 units
+        along the view: aimed at the midpoint from near one end, the view met the line at a grazing angle and a
+        few degrees off put it out of reach (E1M2's switch above a ledge: use pressed for 40 s, stalled at 86%)."""
+        (x1, y1), (x2, y2) = line.v1, line.v2
+        dx, dy = x2 - x1, y2 - y1
+        n = math.hypot(dx, dy) or 1.0
+        m = min(24.0, n / 2) / n
+        t = max(m, min(1.0 - m, ((pos[0] - x1) * dx + (pos[1] - y1) * dy) / (n * n)))
+        return (x1 + t * dx, y1 + t * dy)
 
     def _before_switch(self, pos) -> bool:
         """For a switch or exit switch: the player stands in front of its line, where use reaches it. Beside
         the line the switch lies straight ahead along the wall and use hits nothing (E1M8: the stair switch
         after the Barons; the expert pressed use from its side for 45 s)."""
         g = self.goal
-        if g.kind not in ("switch", "exit") or g.pos == g.target:
-            return True
-        line = next((l for l in self.m.lines if math.dist(((l.v1[0] + l.v2[0]) / 2, (l.v1[1] + l.v2[1]) / 2), g.target) < 1), None)
+        line = self._goal_line()
         if line is None:
             return True
         (x1, y1), (x2, y2) = line.v1, line.v2
@@ -606,10 +648,12 @@ class Perception:
             es = self.escape(obs, bosses)
             if es:
                 parts.append(f"Escape from {name}: {es[0]:.0f} units open, {_side(es[1])}.")
-        elif len(shooters) >= 2:
+        elif len(shooters) >= 2 or any(m.name == "ShotgunGuy" and obs.dist_to(m.x, m.y) <= 300 for m in shooters):
+            # One shotgun guy close is reported too: within 300 his spread hits often (E1M3's corners).
+            n = len(shooters)
             cv = self.cover(obs, shooters, reach=320)
-            parts.append(f"Cover from {len(shooters)} shooters: {cv[0]:.0f} units, {_side(cv[1])}." if cv
-                         else f"Cover from {len(shooters)} shooters: none near.")
+            parts.append(f"Cover from {n} shooter{'s' if n > 1 else ''}: {cv[0]:.0f} units, {_side(cv[1])}." if cv
+                         else f"Cover from {n} shooter{'s' if n > 1 else ''}: none near.")
 
         rays, hazard = [], None
         for name, rel in RAYS:
@@ -628,6 +672,18 @@ class Perception:
         # A barrel within its blast radius (128) of the player: any stray shot that hits it hurts the player
         # (E1M5, E1M6: gunmen's bullets set off barrels beside the expert, 68 health gone at once).
         barrels = [(obs.dist_to(so.x, so.y), so) for so in obs.solids if so.name == "ExplosiveBarrel"]
+        # A barrel that was hit leaves the object list at once but blows up ~14 tics later (0.4 s): the
+        # barrel that killed E1M7 runs at 53-71 health had already vanished from the text when it went off.
+        alive = {so.id: (so.x, so.y) for _, so in barrels}
+        for i, (x, y) in self.barrels.items():
+            if i not in alive:
+                self.bursting[i] = (obs.tic, x, y)
+        self.barrels = alive
+        self.bursting = {i: v for i, v in self.bursting.items() if obs.tic - v[0] <= self.BURST_TICS}
+        if self.bursting:
+            _, x, y = min(self.bursting.values(), key=lambda v: obs.dist_to(v[1], v[2]))
+            if obs.dist_to(x, y) < self.BURST_NEAR:
+                parts.append(f"Barrel about to explode {obs.dist_to(x, y):.0f} units away, {_side(obs.bearing_to(x, y))}.")
         if barrels:
             d, so = min(barrels, key=lambda b: b[0])
             if d < self.BARREL_NEAR:
@@ -686,6 +742,7 @@ class Perception:
         self.lift_floor_prev = {}
         self.history = []
         self.seen = {}
+        self.barrels, self.bursting = {}, {}
         self.stage = 0
         self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
         self._job = None
