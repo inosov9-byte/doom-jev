@@ -215,6 +215,15 @@ class Perception:
             return False
         return not mask[1][r, c]
 
+    def _below_route(self, obs: Obs, pt) -> bool:
+        """The route point stands on a floor too high to step up to from where the player is (no lift on
+        either side)."""
+        ps, rs = self.grid.sector_at(obs.x, obs.y), self.grid.sector_at(*pt)
+        if ps < 0 or rs < 0 or ps == rs or {ps, rs} & self.lift_floors or {ps, rs} & self.lift_sectors_all:
+            return False
+        floor, _ = self._live_heights(obs)
+        return floor[rs] - floor[ps] > MAX_STEP
+
     def _stand_floor(self, obs: Obs) -> float:
         """Floor the player stands on: Doom holds it at the highest floor under any corner of its box, so
         a player whose centre hangs over a drop still stands on the edge (E1M3: the centre over the toxic
@@ -511,6 +520,11 @@ class Perception:
             # (E1M5: the way out of the pool runs under the bridge; back on the bridge, the compass pointed
             # down into the pool).
             if off <= 96 and self._dead_end(*self.route[best]) and not self._dead_end(*pos):
+                off = math.inf
+            # The other way round: the player has fallen off the route into a pit beside it, and the nearest route
+            # point is on the ledge above (E1M7's walkway to the yellow key: the compass pointed "straight ahead"
+            # into a 112-unit ledge 5 units away for 45 s, until the run ended as stuck).
+            if off <= 96 and self._below_route(obs, self.route[best]):
                 off = math.inf
         if (not self.route or off > 96 or self.replan) and obs.tic - self.plan_fail_tic >= self.REPLAN_TICS:
             if self._job is None:
