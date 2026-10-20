@@ -284,8 +284,13 @@ def _decide(f: dict) -> str:
     #     barrels beside the expert, 68 health gone at once). A ready shotgun fights first: walking away
     #     from a barrel past a shotgun guy cost 30 health (E1M4).
     b = f["barrel"]
+    # Not with gunmen within 300 in front, unless the barrel is right beside the player: away from a barrel behind,
+    # the reloading teacher walked up to two shotgun guys at E1M3's corner near (-450, -650), 86 -> 15 in 0.7 s,
+    # and a sidestep instead took it into the open in front of them. The fight rules handle the gunmen.
+    guns_ahead = any(e["angle"] is not None and abs(e["angle"]) <= 45 and e["kind"] in HITSCAN and e["dist"] <= 300
+                     for e in f["enemies"])
     # Something shooting from out of view counts as well (it is the one that sets the barrel off).
-    if (b is not None and b[1] is not None
+    if (b is not None and b[1] is not None and not (guns_ahead and b[0] >= 80)
             and (any(e["dist"] <= 800 and e["kind"] in SHOOTERS for e in f["enemies"]) or f["attacker"] is not None)
             and (b[0] < BARREL_KEEP and f["reload"] > AIM_LEAD or b[0] < 80 and f["weapon"] != "shotgun")):
         move = _away_from(f, b[1])
@@ -615,10 +620,9 @@ def _away_from(f: dict, angle: float, flee: bool = False) -> str | None:
     else:
         cands = ["strafe_right" if angle > 0 else "strafe_left", "back" if abs(angle) < 90 else "forward"]
     # Not toward a monster in front (E1M7's start: away from a barrel behind meant walking into a spectre).
-    # Nor toward a gunman within 300: closer, their spread hits more often (E1M3's corner at (-450, -650):
-    # away from a barrel behind, the reloading teacher walked up to two shotgun guys, 86 -> 15 in 0.7 s).
-    if not flee and any(e["angle"] is not None and abs(e["angle"]) <= 45
-           and e["dist"] <= (300 if e["kind"] in MELEE + HITSCAN else 160) for e in f["enemies"]):
+    # Gunmen ahead are no reason to stay by the barrel: walking toward them does not add to their fire.
+    if not flee and any(e["angle"] is not None and abs(e["angle"]) <= 45 and e["kind"] not in HITSCAN
+           and e["dist"] <= (300 if e["kind"] in MELEE else 160) for e in f["enemies"]):
         cands = [c for c in cands if c != "forward"] + (["strafe_left", "strafe_right"] if "forward" in cands else [])
     ray = {"back": "behind", "forward": "ahead", "strafe_left": "60 left", "strafe_right": "60 right"}
     last = f["last"] or ""
