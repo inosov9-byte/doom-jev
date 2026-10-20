@@ -80,7 +80,8 @@ class Perception:
         self.at_goal = False                          # close to the goal with a clear walk to it
         self.live_check_tic = -10**9
         self.live_prev: dict = {}                 # sector heights at the previous live check
-        self.floors_moving, self.moving_since = False, None   # a floor (not door, not lift) moving now
+        self.moving_set: set[int] = set()       # floors (not doors, not lifts) seen moving at the last live check
+        self.hold_start = None                   # tic the route hold for a moving floor began
         self.plan_fail_tic = -10**9
         self.chase_tic = -10**9
         # Path planning never runs inside describe(): A* took up to 0.7 s per decision on E1M8. Each
@@ -415,7 +416,7 @@ class Perception:
         return f"{_side(obs.bearing_to(*target))}, {left:.0f} units left"
 
     LIVE_CHECK_TICS = 35      # compare live sector heights with the route grid at most once a second
-    MOVING_HOLD_TICS = 15 * 35  # at most this long without replanning while floors move
+    MOVING_HOLD_TICS = 15 * 35  # at most this long without replanning while a floor on the route moves
     LIVE_DELTA = 24.0         # a floor or ceiling this far from the grid's value means the map changed
 
     def _stage_grid(self, obs: Obs) -> NavGrid:
@@ -448,10 +449,8 @@ class Perception:
                   if i not in skip and i < len(base.m.floor) and prev.get(i) == (f, c)
                   and (abs(f - base.m.floor[i]) > 1 or abs(c - base.m.ceil[i]) > 1)]
         # While such a floor moves, plans on any snapshot of it fail or detour (E1M3: mid-rise stairs sent the exit
-        # route through the north room past two shotgun guys); _route_target keeps the old route until it rests.
-        moving = any(i not in skip and i in prev and abs(f - prev[i][0]) > 0.5 for i, (f, c) in obs.heights.items())
-        self.moving_since = (self.moving_since if self.moving_since is not None else obs.tic) if moving else None
-        self.floors_moving = moving and obs.tic - self.moving_since < self.MOVING_HOLD_TICS
+        # route through the north room past two shotgun guys); _route_target keeps a route that crosses it.
+        self.moving_set = {i for i, (f, c) in obs.heights.items() if i not in skip and i in prev and abs(f - prev[i][0]) > 0.5}
         if not changed and not settled and not rested and reclosed == wm.door_sectors - base.m.door_sectors:
             return base
         floor, ceil = wm.floor.copy(), wm.ceil.copy()
@@ -531,6 +530,17 @@ class Perception:
                 return i
         return -1
 
+    def _route_on_moving(self, obs: Obs) -> bool:
+        """Hold replans: the route ahead crosses a floor that is moving (at most MOVING_HOLD_TICS per movement).
+        Floors moving elsewhere do not hold (E1M8: a lift rising across the map held the Baron chase's replans)."""
+        if not self.moving_set:
+            self.hold_start = None
+            return False
+        on = any(self.grid.sector_at(*p) in self.moving_set for p in self.route[self.idx:self.idx + 120:2])
+        if on and self.hold_start is None:
+            self.hold_start = obs.tic
+        return on and obs.tic - self.hold_start < self.MOVING_HOLD_TICS
+
     def _route_target(self, obs: Obs):
         pos = (obs.x, obs.y)
         grid = self._stage_grid(obs)
@@ -568,7 +578,7 @@ class Perception:
             # into a 112-unit ledge 5 units away for 45 s, until the run ended as stuck).
             if off <= 96 and self._below_route(obs, self.route[best]):
                 off = math.inf
-        if ((not self.route or (off > 96 or self.replan) and not self.floors_moving)
+        if ((not self.route or (off > 96 or self.replan) and not self._route_on_moving(obs))
                 and obs.tic - self.plan_fail_tic >= self.REPLAN_TICS):
             if self._job is None:
                 self.replan = False
@@ -803,7 +813,7 @@ class Perception:
         self.stage = 0
         self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
         self.live_prev = {}
-        self.floors_moving, self.moving_since = False, None
+        self.moving_set, self.hold_start = set(), None
         self._job = None
 
 
