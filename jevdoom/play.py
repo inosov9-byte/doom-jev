@@ -32,7 +32,7 @@ from .jev import LOCAL_URL
 from .loadout import apply as apply_loadout, from_obs, load as load_loadout
 from .needs import Needs
 from .perception import Perception
-from .progression import Subgoal, load_or_solve, stage_grids, with_supply_detours, with_weapon_detours
+from .progression import Subgoal, load_or_solve, stage_grids, with_ambush_holds, with_supply_detours, with_weapon_detours
 from .wadmap import NavGrid, exit_target, load_map, path_length
 
 TICRATE = 35
@@ -195,6 +195,7 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
     except RuntimeError:          # planner found no progression (E1M3/E1M4/E1M7): exit only, compass if any route
         st, mid, _ = exit_target(m)
         goals = [Subgoal("exit", "exit", st, mid)]
+    goals = with_ambush_holds(m, goals, start)
     grids = stage_grids(m, goals)
     grid = grids[-1]
     # route over all stages: start -> subgoal 1 -> ... -> exit, planned before the game starts

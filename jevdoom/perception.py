@@ -78,6 +78,7 @@ class Perception:
         self._lines_at: dict = {}                      # switch target point -> its line
         self._reach: dict[tuple, tuple] = {}           # (id(grid), goal) -> (grid, cells the goal is reachable from)
         self.at_goal = False                          # close to the goal with a clear walk to it
+        self.hold: list | None = None                 # hold stage: [stage, began, arrived, last threat] tics
         self.live_check_tic = -10**9
         self.plan_fail_tic = -10**9
         self.chase_tic = -10**9
@@ -385,6 +386,8 @@ class Perception:
                 done = obs.dist_to(*g.pos) < 40
             elif g.kind == "kill":
                 done = not self._targets(obs)
+            elif g.kind == "hold":
+                done = self._hold_done(obs)
             else:
                 done = any(abs(obs.heights.get(i, (f, c))[0] - f) > 4 or abs(obs.heights.get(i, (f, c))[1] - c) > 4
                            for i, (f, c, t) in enumerate(zip(self.stage_grids[0].m.floor, self.stage_grids[0].m.ceil, self.m.sector_tag))
@@ -394,6 +397,24 @@ class Perception:
             self.stage += 1
             r = self.stage_routes[self.stage] if self.stage < len(self.stage_routes) else None
             self.route, self.idx, self.via = (list(r) if r else None), 0, None
+
+    HOLD_MIN = 6 * 35         # a hold stage (progression.with_ambush_holds) waits at least this long at its point,
+    HOLD_QUIET = 4 * 35       # ends after this long with no monster in view, no shooter out of sight and no hit,
+    HOLD_MAX = 45 * 35        # and gives up this long after the stage began
+
+    def _hold_done(self, obs: Obs) -> bool:
+        """Hold stage: walk to the point, wait there until the closet wave has come and gone quiet."""
+        h = self.hold
+        if h is None or h[0] != self.stage:
+            h = self.hold = [self.stage, obs.tic, None, obs.tic]      # stage, began, arrived, last threat
+        if (any(m.visible for m in obs.monsters) or self.seen
+                or self.prev is not None and obs.damage_taken > self.prev.damage_taken):
+            h[3] = obs.tic
+        if h[2] is None and obs.dist_to(*self.goal.pos) < 96:
+            h[2] = obs.tic
+        if obs.tic - h[1] >= self.HOLD_MAX:
+            return True
+        return h[2] is not None and obs.tic - h[2] >= self.HOLD_MIN and obs.tic - h[3] >= self.HOLD_QUIET
 
     def route_bearing(self, obs: Obs) -> float | None:
         """Bearing the compass would report (positive = left), or None without a route."""
@@ -758,6 +779,7 @@ class Perception:
         self.seen = {}
         self.barrels, self.bursting = {}, {}
         self.stage = 0
+        self.hold = None
         self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
         self._job = None
 
