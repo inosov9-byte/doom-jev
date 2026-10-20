@@ -68,6 +68,14 @@ SPOTS = {
     "e1m3-corner": dict(map="E1M3", sources=["runs/campaign-2b-*/s*/E1M3/*", "data/camp-teacher/*/E1M3/*"],
                         trigger=(-1000, -880, 160), offsets=(-2.0, 0.0, 2.0),
                         success={"reach": (-160, -864, 80)}, timeout=60),
+    # E1M2's stalls (student campaigns 2b-b, 2b-c, 2b-d; none in 2b-e): the lift at ~83% before the switch, and the
+    # exit lift at 99.5%. Pass: the switch, and the exit.
+    "e1m2-lift83": dict(map="E1M2", sources=["runs/campaign-2b-*/s*/E1M2/*", "data/camp-teacher/*/E1M2/*"],
+                        trigger=(-1520, 1530, 140), offsets=(-1.0,),
+                        success={"reach": (-1536, 2072, 80)}, timeout=45),
+    "e1m2-exit": dict(map="E1M2", sources=["runs/campaign-2b-*/s*/E1M2/*", "data/camp-teacher/*/E1M2/*"],
+                      trigger=(-700, 2320, 140), offsets=(-1.0,),
+                      success={"exit": True}, timeout=45),
 }
 
 
