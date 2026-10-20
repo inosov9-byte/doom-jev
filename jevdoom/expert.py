@@ -45,7 +45,7 @@ COVER_HEALTH = 70             # below this, a hit from a boss sends the expert b
 BARREL_BLAST = 160             # barrel explosion radius is 128; never shoot one closer than this
 BURST_FLEE = 210               # a barrel about to explode this close: move away from it first
 BARREL_KEEP = 135              # a barrel blast does 128 minus the box distance (axis distance less 16): keep this far under fire
-VOLLEY_DODGE = os.environ.get("JEVDOOM_VOLLEY_DODGE", "1") == "1"   # 2+ fireballs on course: sidestep even with a ready shotgun (2026-10-20)
+VOLLEY_DODGE = os.environ.get("JEVDOOM_VOLLEY_DODGE", "0") == "1"   # 2+ fireballs on course: sidestep even with a ready shotgun. Off: E1M6 s61-80 alive 20 s after the key 13/20 vs 16/20 without it (2026-10-20)
 DODGE_MIN = 0.25               # seconds: a fireball arriving sooner is not dodged from a stand
 KILL_GOALS = ("baron of hell",)
 HOLD = os.environ.get("JEVDOOM_HOLD", "1") == "1"
