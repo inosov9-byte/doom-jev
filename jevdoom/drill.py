@@ -76,6 +76,16 @@ SPOTS = {
     "e1m2-exit": dict(map="E1M2", sources=["runs/campaign-2b-*/s*/E1M2/*", "data/camp-teacher/*/E1M2/*"],
                       trigger=(-700, 2320, 140), offsets=(-1.0,),
                       success={"exit": True}, timeout=45),
+    # E1M5 student stalls (campaign-2b-f). s91 at 65%: on the lift west of the yellow door (-720, 827) after the
+    # switch, the lift rose and the student pressed use 40 s on the door 65 units ahead (out of reach; the teacher
+    # walks on). s93 at 52%: in the door vestibule at (-1872, 788) west of the switch, use pressed 40 s on a closed
+    # door with the route 42-66 deg left (the teacher turns to the route). Pass: past the door / at the switch.
+    "e1m5-yellow-door": dict(map="E1M5", sources=["runs/campaign-2b-*/s*/E1M5/*", "data/camp-teacher/*/E1M5/*"],
+                             trigger=(-790, 827, 60), offsets=(-1.0, 1.0),
+                             success={"reach": (-240, 835, 120)}, timeout=30),
+    "e1m5-vestibule": dict(map="E1M5", sources=["runs/campaign-2b-*/s*/E1M5/*", "data/camp-teacher/*/E1M5/*"],
+                           trigger=(-1888, 760, 40), offsets=(-1.0, 0.5),
+                           success={"reach": (-1128, 832, 80)}, timeout=45),
 }
 
 
