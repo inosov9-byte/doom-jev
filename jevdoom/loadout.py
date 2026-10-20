@@ -43,22 +43,37 @@ def load(spec: str | None, map_name: str) -> dict | None:
 
 
 def apply(g, lo: dict) -> None:
-    """Turn the pistol-start player into the carried state. Exact values: take everything, give the amount."""
-    cmds = [f"give {GIVE[w]}" for w in lo["weapons"] if w in GIVE]
-    # Doom keeps a backpack across exits; ammo above the normal maximum means one was carried
-    if lo["bullets"] > 200 or lo["shells"] > 50 or lo.get("rockets", 0) > 50:
-        cmds.insert(0, "give backpack")
-    for item, key in (("clip", "bullets"), ("shell", "shells"), ("rocketammo", "rockets")):
-        cmds += [f"take {item} 999"] + ([f"give {item} {lo[key]}"] if lo.get(key, 0) > 0 else [])
-    if lo["health"] < 100:
-        cmds.append(f"take health {100 - lo['health']}")
-    elif lo["health"] > 100:
-        cmds.append(f"give health {lo['health'] - 100}")
-    if lo["armor"] > 0:
-        cmds += ["give greenarmor" if lo["armor"] <= 100 else "give bluearmor"]
-        full = 100 if lo["armor"] <= 100 else 200
-        if lo["armor"] < full:
-            cmds.append(f"take armor {full - lo['armor']}")
-    for c in cmds:
+    """Turn the pistol-start player into the carried state, checked against the live values.
+    Console quirks (ViZDoom 1.2): 'take armor N' removes all armor (every map used to start with 0 armor
+    after a partial-armor exit), and 'give shell N' after the ammo was taken to 0 is capped at the normal
+    maximum even with a backpack. So: armor as armor bonuses (exact amount; green absorption below 200),
+    ammo as differences from what the player holds, repeated until it matches."""
+    from .env import observe
+
+    def send(c):
         g.send_game_command(c)
         g.make_action(blank_action(), 1)
+
+    for w in lo["weapons"]:
+        if w in GIVE:
+            send(f"give {GIVE[w]}")
+    # Doom keeps a backpack across exits; ammo above the normal maximum means one was carried
+    if lo["bullets"] > 200 or lo["shells"] > 50 or lo.get("rockets", 0) > 50:
+        send("give backpack")
+    for _ in range(4):
+        o = observe(g, 0)
+        todo = [(item, lo.get(key, 0) - round(cur)) for item, key, cur in
+                (("clip", "bullets", o.bullets), ("shell", "shells", o.shells), ("rocketammo", "rockets", o.rockets))]
+        todo = [(item, d) for item, d in todo if d]
+        if not todo:
+            break
+        for item, d in todo:
+            send(f"give {item} {d}" if d > 0 else f"take {item} {-d}")
+    if lo["health"] < 100:
+        send(f"take health {100 - lo['health']}")
+    elif lo["health"] > 100:
+        send(f"give health {lo['health'] - 100}")
+    if lo["armor"] >= 200:
+        send("give bluearmor")
+    elif lo["armor"] > 0:
+        send(f"give armorbonus {lo['armor']}")
