@@ -396,7 +396,7 @@ ENABLED = {2013, 2019, 2002, 2003, 8}        # worth a key or a trigger on the w
 ENABLER_COST = 300.0                         # an extra key or trigger stage costs this much on top of the walk
 WEAPON_THING = {2001: "shotgun", 2002: "chaingun", 2003: "rocket launcher"}
 RESOURCE_CACHE = os.environ.get("JEV_RESOURCE_CACHE", r"C:\tmp\jev-doom\cache\resources")
-RESOURCE_VERSION = 3
+RESOURCE_VERSION = 4
 
 
 def _on_skill(t) -> bool:
@@ -495,9 +495,11 @@ def _plan_resources(m: MapData, goals: list[Subgoal], start: tuple[float, float]
             enablers[i] = out
         return enablers[i]
 
-    def hazard(gr, *paths):
-        secs = {gr.sector_at(*q) for p in paths for q in p} - {-1}
-        return any(int(gr.m.special[s]) in DAMAGE_SECTORS for s in secs)
+    def hazard(gr, base, *paths):
+        """The detour crosses a damaging floor the stage route itself does not (E1M4: the first stretch
+        crosses nukage anyway; the box of shells beside the start was dropped for it)."""
+        bad = lambda ps: {s for p in ps for q in p if (s := gr.sector_at(*q)) >= 0 and int(gr.m.special[s]) in DAMAGE_SECTORS}
+        return bool(bad(paths) - bad([base]))
 
     picks = []                                # (stage, extra, [subgoals]) per item
     for t in m.things:
@@ -522,7 +524,7 @@ def _plan_resources(m: MapData, goals: list[Subgoal], start: tuple[float, float]
                 if math.dist(a, pos) + math.dist(pos, g.pos) - bl > limit:
                     continue
                 p1, p2 = gr.plan(a, pos), gr.plan(pos, g.pos)
-                if p1 and p2 and not hazard(gr, p1, p2):
+                if p1 and p2 and not hazard(gr, base, p1, p2):
                     cands.append((i, path_length(p1) + path_length(p2) - bl, []))
             elif t[3] in ENABLED:
                 for chain, g2, r2 in stage_enablers(i):
@@ -533,7 +535,7 @@ def _plan_resources(m: MapData, goals: list[Subgoal], start: tuple[float, float]
                         continue
                     legs = [gx.plan(pts[j], pts[j + 1]) for j, (_, gx) in enumerate(chain)]
                     legs += [g2.plan(chain[-1][0].pos, pos), g2.plan(pos, g.pos)]
-                    if all(legs) and not hazard(g2, *legs):
+                    if all(legs) and not hazard(g2, base, *legs):
                         cands.append((i, sum(map(path_length, legs)) - bl + extra_cost, [sg for sg, _ in chain]))
         cands = [c for c in cands if c[1] <= limit]
         if not cands:
