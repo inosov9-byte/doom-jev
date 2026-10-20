@@ -36,6 +36,8 @@ TOPUP_CLEAR = 700         # a top-up item with a living monster this close is le
 MONSTER_CLEAR = 350       # skip items with a living monster this close (a detour into an uncleared room)
 TOPUP_LEFT = 2500.0       # route units left to the exit when the top-up starts (was 1200: E1M3 seed 52
                           # left at 46 health past two medikits ~850 units off the last stretch)
+KEY_HEALTH = 80            # health below this before a key stage: medikits and stimpacks on a walk
+KEY_HEALTH_WALK = 700.0
 SPEED = 280.0             # units per second the teacher covers on a route, for the detour deadline
 
 # Planned resource stages (progression.with_resource_detours, Subgoal.need): still worth the walk? A stage
@@ -49,7 +51,7 @@ STAGE_NEEDED = {"green armor": lambda o: o.armor < 60, "blue armor": lambda o: o
 STAGE_SLACK = 8.0         # seconds on top of twice the stage route's running time before a planned stage is dropped
 
 
-def wanted(obs: Obs, exit_stage: bool, carry: bool) -> list[tuple[set[str], float, bool]]:
+def wanted(obs: Obs, exit_stage: bool, carry: bool, key_next: bool = False) -> list[tuple[set[str], float, bool]]:
     """(item names, max walk in units, top-up?) per resource that is low now. Mid-map: health below 40, or
     out of ammo for every weapon. Campaign exit stretch: top up what the next map needs, walks in proportion
     to the item's worth (a medikit with 40 health missing is worth 700 units, a stimpack 300).
@@ -59,6 +61,10 @@ def wanted(obs: Obs, exit_stage: bool, carry: bool) -> list[tuple[set[str], floa
     shells = obs.shells if obs.has_shotgun else 0
     if obs.health < 40:
         out.append((set(HEALTH), 450.0 if obs.health < 25 else 350.0, False))
+    # Health before a key: Doom keys are bait. E1M6's red key opens four monster closets around the yard; runs that
+    # took it with 75+ health got through the wave (4 of 4), runs under 65 mostly died there (10 of 14).
+    if key_next and KEY_HEALTH > obs.health >= 40:
+        out.append((set(HEALTH), KEY_HEALTH_WALK, False))
     if obs.has_shotgun and shells < 6:     # shotgun nearly dry: shells on a short walk (E1M5 deaths out of shells)
         out.append(({"Shell", "ShellBox"}, 300.0, False))
     if shells < 2 and obs.bullets < 15:
@@ -146,7 +152,8 @@ class Needs:
             return False
         self.check_tic = obs.tic
         best = None
-        for names, limit, topup in wanted(obs, exit_stage, self.carry):
+        nxt = next((g for g in perc.goals[stage:] if not g.need), None)
+        for names, limit, topup in wanted(obs, exit_stage, self.carry, key_next=nxt is not None and nxt.kind == "key"):
             clear = TOPUP_CLEAR if topup else MONSTER_CLEAR
             for p in obs.pickups:
                 if p.name not in names or self.skip.get(p.id, -1) > obs.tic:
