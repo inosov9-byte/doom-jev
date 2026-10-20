@@ -505,31 +505,6 @@ class Perception:
         elif kind == "route":
             self.plan_fail_tic = obs.tic
 
-    TRACK_TRIES = 6           # nearest route points tested for a clear line before the route counts as lost
-
-    def _track_route(self, obs: Obs, lo: int, hi: int) -> int:
-        """Index of the nearest route point in [lo, hi) the player has a clear line to, or -1. The nearest
-        point alone can lie behind a wall: E1M3's north room sits beside the stair corridor, and a player
-        pushed into the room tracked a corridor point 90 units away through the wall; the compass read
-        "straight ahead" into it until the run timed out (student campaigns 2b-f s98, s101)."""
-        pos = (obs.x, obs.y)
-        order = sorted(range(lo, hi), key=lambda i: math.dist(pos, self.route[i]))
-        if not order or math.dist(pos, self.route[order[0]]) > 96:
-            return order[0] if order else -1
-        floor, ceil = self._live_heights(obs)
-        az = self._stand_floor(obs) + 24
-        for i in order[:self.TRACK_TRIES]:
-            p = self.route[i]
-            if math.dist(pos, p) > 96:
-                break
-            if math.dist(pos, p) < 24:
-                return i
-            sec = self.grid.sector_at(*p)
-            bz = (floor[sec] if sec >= 0 else az - 24) + 24
-            if self._sight_clear(pos, az, p, bz, floor, ceil):
-                return i
-        return -1
-
     def _route_on_moving(self, obs: Obs) -> bool:
         """Hold replans: the route ahead crosses a floor that is moving (at most MOVING_HOLD_TICS per movement).
         Floors moving elsewhere do not hold (E1M8: a lift rising across the map held the Baron chase's replans)."""
@@ -563,11 +538,9 @@ class Perception:
         cap = len(self.route) if self.route and self.via is None else (self.via + 1 if self.route else 0)
         if self.route:
             lo, hi = self.idx, min(cap, self.idx + 60)
-            best = self._track_route(obs, lo, hi)
+            best = min(range(lo, hi), key=lambda i: math.dist(pos, self.route[i]))
             self.idx = best
-            off = math.dist(pos, self.route[best]) if best >= 0 else math.inf
-            if best < 0:
-                self.idx = best = lo
+            off = math.dist(pos, self.route[best])
             # The nearest route point lies in a pit the player is above, not in: a route planned from the pit
             # (E1M5: the way out of the pool runs under the bridge; back on the bridge, the compass pointed
             # down into the pool).
