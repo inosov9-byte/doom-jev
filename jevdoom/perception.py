@@ -618,9 +618,10 @@ class Perception:
         parts = [f"Health {hp:.0f}, armor {obs.armor:.0f}. Weapon: {weapon}; "
                  f"{obs.bullets:.0f} bullets, {obs.shells:.0f} shells"
                  + (f", {obs.rockets:.0f} rockets." if obs.rockets > 0 else ".")]
-        if obs.weapon == 3:       # the shotgun fires once per 37 tics whatever is pressed: say when it is ready
+        if obs.weapon == 3 and not obs.switch[0]:   # the shotgun fires once per 37 tics whatever is pressed: say when it is ready
             wait = max(0, SHOTGUN_REFIRE - (obs.tic - obs.shot_tic)) / 35
             parts[0] += " Shotgun ready." if wait < 0.05 else f" Shotgun reloading, ready in {wait:.1f} s."
+        parts[0] += self._weapons_text(obs)
         held = sorted(self.keys_held(obs))
         if held:
             parts[0] += f" Keys: {', '.join(held)}."
@@ -769,6 +770,18 @@ class Perception:
                                  if sec in self.m.door_sectors and c - f >= PLAYER_HEIGHT}
         self.lift_floor_prev = {sec: obs.heights[sec][0] for sec in self.lift_sectors_all if sec in obs.heights}
         return " ".join(parts)
+
+    @staticmethod
+    def _weapons_text(obs: Obs) -> str:
+        """The other weapons Jev can switch to (with ammo), and a switch in progress (weapon commands, 2026-10-20)."""
+        ammo = {2: (obs.bullets, "bullets"), 3: (obs.shells if obs.has_shotgun else 0, "shells"),
+                4: (obs.bullets if obs.has_chaingun else 0, "bullets"), 5: (obs.rockets if obs.has_launcher else 0, "rockets")}
+        other = [f"{WEAPON_NAMES[w]} {n:.0f} {unit}" for w, (n, unit) in ammo.items() if n > 0 and w != obs.weapon]
+        t = f" Also carried: {', '.join(other)}." if other else ""
+        w, wait = obs.switch
+        if w:
+            t += f" Switching to {WEAPON_NAMES[w]}, ready in {wait:.1f} s."
+        return t
 
     def reset(self) -> None:
         self.route, self.idx, self.prev, self.via = None, 0, None, None

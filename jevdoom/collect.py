@@ -25,7 +25,8 @@ ROLLOUT_WEIGHTS = {"forward": 4, "forward_short": 1, "fire_strafe_left": 0.5, "f
                    "turn_left_5": 0.6, "turn_left_15": 1, "turn_left_30": 1, "turn_left_45": 0.8, "turn_left_90": 0.5,
                    "turn_right_5": 0.6, "turn_right_15": 1, "turn_right_30": 1, "turn_right_45": 0.8, "turn_right_90": 0.5,
                    "turn_around": 0.3, "fire": 1, "use": 0.5,
-                   **{f"turn_{s}_{a}_fire": 0.3 for s in ("left", "right") for a in (5, 15, 30)}}
+                   **{f"turn_{s}_{a}_fire": 0.3 for s in ("left", "right") for a in (5, 15, 30)},
+                   "weapon_shotgun": 0.1, "weapon_chaingun": 0.1, "weapon_pistol": 0.1}
 
 
 def free_cells(grid: NavGrid):

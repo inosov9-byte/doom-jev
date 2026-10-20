@@ -50,6 +50,7 @@ KILL_GOALS = ("baron of hell",)
 HOLD = os.environ.get("JEVDOOM_HOLD", "1") == "1"
 HOLD_HEALTH = 50               # alone, a single shooter out of sight is waited for below this health
 DEAD_DROP = "drop with no way back"
+WEAPON_CHOICE = os.environ.get("JEVDOOM_WEAPON_CHOICE", "1") == "1"   # teacher weapon_* labels (2026-10-20)
 HOLD_GOAL = "hold point"       # planner stage after an ambush key (progression.with_ambush_holds): wait there
 # How far a move can carry the player, slide included (a run builds momentum that slides ~60-150 units
 # after the next command replaces it), and the drop rays it must keep clear of: a strafe goes 90
@@ -86,6 +87,9 @@ def parse_state(s: str) -> dict:
     m = re.search(r"Weapon: ([a-z ]+); (\d+) bullets, (\d+) shells", s)
     if m:
         f["weapon"], f["bullets"], f["shells"] = m.group(1), int(m.group(2)), int(m.group(3))
+    m = re.search(r"Also carried: ([^.]*)\.", s)
+    f["carried"] = {w: int(n) for w, n in re.findall(r"([a-z ]+?) (\d+) [a-z]+(?:, |$)", m.group(1))} if m else {}
+    f["switching"] = "Switching to " in s
     m = re.search(r"Enemies in view: ([^.]*)\.", s)
     if m and m.group(1) != "none":
         for part in m.group(1).split(";"):
@@ -710,8 +714,61 @@ def _flip_flop(f: dict) -> bool:
     return len(turns) == 3 == len(f["recent"][-3:]) and turns[0] == turns[2] != turns[1]
 
 
+# Weapon choice (2026-10-20): the teacher labels weapon_* commands; the executor only falls back on an empty gun.
+# Shells are the scarce ammo (the teacher left E1M5 with 0-6), and a shotgun at range spends them on targets a
+# chaingun handles. A switch costs 0.6-1.5 s standing still (lower, after any shotgun reload, then raise), so
+# switch per fight, not per shot: never mid-fight or under fire, and not again soon after a switch. An
+# executor-level "chaingun at range" rule switched ~20 times a run and lost (fights round 6, cg1).
+LIGHT = ("zombieman", "imp")           # chaingun targets at range
+HEAVY = ("shotgun guy", "demon", "spectre", "baron", "cacodemon")
+WEAPON_RANGE = 350                     # zombiemen/imps all at least this far: chaingun fight
+WEAPON_CLOSE = 250                     # any enemy nearer, or a heavy one within HEAVY_CLOSE: keep the weapon in hand
+HEAVY_CLOSE = 400
+SHELLS_LOW = 8                         # fewer shells: chaingun unless a Baron is in view
+SHELLS_BACK = 12                       # chaingun -> shotgun for a heavy enemy only with this many shells
+SHELLS_PISTOL = 4                      # no chaingun: pistol for zombiemen/imps at range below this many shells
+CHAINGUN_MIN = 30                      # bullets worth switching to the chaingun for
+PISTOL_MIN = 20
+
+
+def _weapon_choice(f: dict) -> str | None:
+    if f["switching"] or any(c.startswith("weapon_") for c in f["recent"][-3:] + [f["last"] or ""]):
+        return None                                            # hysteresis: one switch, then fight with it
+    en = f["enemies"]
+    near = min((e["dist"] for e in en), default=1e9)
+    heavy = [e for e in en if e["kind"] in HEAVY]
+    if (f["incoming"] or f["attacker"] is not None or f["on_nukage"] or near < WEAPON_CLOSE
+            or any(e["dist"] < HEAVY_CLOSE for e in heavy)
+            or min(f["drops"].values(), default=1e9) < 200):
+        return None
+    held, carried = f["weapon"], f["carried"]
+    baron = any(e["kind"] == "baron" for e in en)
+    ranged = bool(en) and not heavy and near >= WEAPON_RANGE
+    if held == "shotgun":
+        if f["reload"] > 0.1 or baron:
+            return None
+        if carried.get("chaingun", 0) >= CHAINGUN_MIN and (ranged or f["shells"] < SHELLS_LOW):
+            return "weapon_chaingun"
+        if "chaingun" not in carried and carried.get("pistol", 0) >= PISTOL_MIN and ranged and f["shells"] < SHELLS_PISTOL:
+            return "weapon_pistol"
+        return None
+    if held in ("chaingun", "pistol"):
+        shells = carried.get("shotgun", 0)
+        if (heavy and shells >= SHELLS_BACK or baron and shells >= SHELLS_PISTOL
+                or f["bullets"] < (10 if held == "chaingun" else 5) and shells > 0
+                or held == "pistol" and shells >= SHELLS_LOW):
+            return "weapon_shotgun"
+        if held == "pistol" and carried.get("chaingun", 0) >= CHAINGUN_MIN:
+            return "weapon_chaingun"
+    return None
+
+
 def decide(state: str) -> str:
     f = parse_state(state)
+    if WEAPON_CHOICE:
+        w = _weapon_choice(f)
+        if w:
+            return w
     cmd = _decide(f)
     # Still sliding from a run toward a drop: brake. Doom momentum carries a run ~150 units after the
     # next command, and a turn does not stop it (E1M3: turned at the walkway's bend mid-slide, fell in).

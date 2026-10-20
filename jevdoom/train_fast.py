@@ -116,6 +116,8 @@ def main(argv=None):
     rows = [encode(tok, r) for r in recs]
     val = [r for r in rows if held_out(r["group"], args.val_frac)]
     train = [r for r in rows if not held_out(r["group"], args.val_frac)]
+    if len({tuple(r["options"]) for r in rows}) > 1:     # e.g. records built before the weapon commands (26 options)
+        raise SystemExit("records have different option lists: rebuild them with jevdoom.dataset from the states")
     label_ids = torch.tensor(label_token_ids(tok, len(rows[0]["options"])), device=device)
     lens = sorted(len(r["ids"]) for r in rows)
     print(f"{len(train)} train / {len(val)} held-out records, prompt tokens median {lens[len(lens) // 2]} max {lens[-1]}", flush=True)

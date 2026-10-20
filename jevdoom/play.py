@@ -253,6 +253,7 @@ def run(arm: str, seed: int | None = None, *, wad: str = r"C:\tmp\jev-doom\wad\d
             if prev_ammo is not None and ammo[0] == prev_ammo[0] and ammo[1] < prev_ammo[1]:
                 shot_tic = tic                        # the weapon fired this tic: reload clock starts
             prev_ammo, obs.shot_tic = ammo, shot_tic
+            obs.switch = exe.switch_to(obs)
             if stepped and exe.settled:
                 if exe_seq == brain.issued:                  # previous command took effect: decide now
                     t0 = time.perf_counter()

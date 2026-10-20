@@ -72,6 +72,7 @@ class Obs:
     has_launcher: bool = False
     damage_dealt: float = 0
     shot_tic: int = -10**6          # tic the current weapon last fired (set by the game loop)
+    switch: tuple = (0, 0.0)        # (weapon being brought up, seconds until ready) from the executor (set by the game loop)
     hits: int = 0
     sector: int = -1
     monsters: list[Thing] = field(default_factory=list)   # alive monsters; visible flag from labels buffer

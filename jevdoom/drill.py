@@ -209,6 +209,7 @@ def restore(source: str | Path, takeover: int, *, timeout_s: int = 400, fast: bo
             if prev_ammo is not None and ammo[0] == prev_ammo[0] and ammo[1] < prev_ammo[1]:
                 shot_tic = tic
             prev_ammo, obs.shot_tic = ammo, shot_tic
+            obs.switch = exe.switch_to(obs) if hasattr(exe, "switch_to") else (0, 0.0)
         for r in by_obs.get(tic, []):         # the view the worker described: keeps perception's state in step
             try:
                 perc.describe(obs, last_cmd=last_cmd)
@@ -311,6 +312,7 @@ def drill(job: dict) -> dict:
             if prev_ammo is not None and ammo[0] == prev_ammo[0] and ammo[1] < prev_ammo[1]:
                 shot_tic = tic
             prev_ammo, obs.shot_tic = ammo, shot_tic
+            obs.switch = exe.switch_to(obs) if hasattr(exe, "switch_to") else (0, 0.0)
             if logged:
                 for r in st["by_tic"].get(tic, []):
                     if r.get("choice"):

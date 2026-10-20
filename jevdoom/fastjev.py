@@ -15,7 +15,9 @@ import string
 
 from .commands import COMMAND_IDS
 
-LETTERS = string.ascii_uppercase
+# A-Z, then a-z: 29 commands since the weapon commands (2026-10-20). " a".." z" are single tokens in Qwen3.5
+# (digits are not: " 1" is two tokens). Upper-case letters keep their meaning, so old adapters still score.
+LETTERS = string.ascii_uppercase + string.ascii_lowercase
 GRAPH_BUCKETS = (256, 320, 384, 448, 512, 576)
 
 

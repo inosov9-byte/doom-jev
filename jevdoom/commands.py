@@ -41,6 +41,11 @@ COMMANDS: dict[str, str | None] = {
     # came right after a turn, i.e. two decisions per shot. Appended last so the first 20 option
     # letters stay where trained students expect them.
     **{f"turn_{side}_{a}_fire": f"turn {side} {a} degrees, then shoot" for side in ("left", "right") for a in (5, 15, 30)},
+    # Weapon choice (2026-10-20): Jev's decision, not an executor preference. Appended last so the first 26
+    # option letters stay put. The executor keeps the chosen weapon until it runs dry (then the next with ammo).
+    "weapon_shotgun": "switch to the shotgun",
+    "weapon_chaingun": "switch to the chaingun",
+    "weapon_pistol": "switch to the pistol",
 }
 COMMAND_IDS = list(COMMANDS)
 
@@ -52,3 +57,5 @@ MOVE_TICS = 20
 SHORT_MOVE_TICS = 6
 FIRE_TICS = 20          # about one decision interval: keep shooting until the next command
 USE_TICS = 6
+WEAPON_CMD = {"weapon_pistol": 2, "weapon_shotgun": 3, "weapon_chaingun": 4}   # Doom weapon slot
+SWITCH_TICS = 70        # a weapon command ends when the weapon is up, at most this many tics (lower + raise ~35-55)

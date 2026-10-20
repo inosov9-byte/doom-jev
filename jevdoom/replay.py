@@ -180,6 +180,7 @@ def replay(run_dir: str | Path, out_dir: str | Path, *, wad: str = r"C:\tmp\jev-
         if prev_ammo is not None and ammo[0] == prev_ammo[0] and ammo[1] < prev_ammo[1]:
             shot_tic = tic
         prev_ammo, obs.shot_tic = ammo, shot_tic
+        obs.switch = exe.switch_to(obs) if hasattr(exe, "switch_to") else (0, 0.0)
         if perc is not None:
             for r in by_obs.get(tic, []):     # the worker described this view; keeps route tracking in step
                 try:
