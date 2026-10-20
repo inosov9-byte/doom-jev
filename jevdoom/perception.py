@@ -24,6 +24,7 @@ BODY_RADIUS = 16         # Doom player radius: a move is blocked by whatever eit
 LINE_OF_FIRE = os.environ.get("JEVDOOM_LINE_OF_FIRE", "1") == "1"
 SHOTGUN_REFIRE = 37      # tics between shotgun shots (Doom)
 HISTORY = 4              # commands listed in "Recent commands"
+WEAPON_RECENT = 10       # seconds a weapon change is reported
 # A drop the player cannot climb back out of toward the current goal (E1M3: the toxic ring around the
 # walkway; fights and dodges pushed the expert off the edge on every seed, and it died in the pit).
 DEAD_DROP = "drop with no way back"
@@ -771,8 +772,7 @@ class Perception:
         self.lift_floor_prev = {sec: obs.heights[sec][0] for sec in self.lift_sectors_all if sec in obs.heights}
         return " ".join(parts)
 
-    @staticmethod
-    def _weapons_text(obs: Obs) -> str:
+    def _weapons_text(self, obs: Obs) -> str:
         """The other weapons Jev can switch to (with ammo), and a switch in progress (weapon commands, 2026-10-20)."""
         ammo = {2: (obs.bullets, "bullets"), 3: (obs.shells if obs.has_shotgun else 0, "shells"),
                 4: (obs.bullets if obs.has_chaingun else 0, "bullets"), 5: (obs.rockets if obs.has_launcher else 0, "rockets")}
@@ -781,6 +781,12 @@ class Perception:
         w, wait = obs.switch
         if w:
             t += f" Switching to {WEAPON_NAMES[w]}, ready in {wait:.1f} s."
+        if obs.weapon != getattr(self, "weapon_prev", obs.weapon):
+            self.weapon_tic = obs.tic
+        self.weapon_prev = obs.weapon
+        ago = (obs.tic - getattr(self, "weapon_tic", -10**6)) / 35
+        if not w and ago < WEAPON_RECENT:      # lets a switch rule keep a gap between switches (text only)
+            t += f" Weapon changed {ago:.0f} s ago."
         return t
 
     def reset(self) -> None:

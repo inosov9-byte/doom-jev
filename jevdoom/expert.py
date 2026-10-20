@@ -90,6 +90,8 @@ def parse_state(s: str) -> dict:
     m = re.search(r"Also carried: ([^.]*)\.", s)
     f["carried"] = {w: int(n) for w, n in re.findall(r"([a-z ]+?) (\d+) [a-z]+(?:, |$)", m.group(1))} if m else {}
     f["switching"] = "Switching to " in s
+    m = re.search(r"Weapon changed (\d+) s ago", s)
+    f["weapon_ago"] = float(m.group(1)) if m else 1e9
     m = re.search(r"Enemies in view: ([^.]*)\.", s)
     if m and m.group(1) != "none":
         for part in m.group(1).split(";"):
@@ -720,30 +722,37 @@ def _flip_flop(f: dict) -> bool:
 # switch per fight, not per shot: never mid-fight or under fire, and not again soon after a switch. An
 # executor-level "chaingun at range" rule switched ~20 times a run and lost (fights round 6, cg1).
 LIGHT = ("zombieman", "imp")           # chaingun targets at range
-HEAVY = ("shotgun guy", "demon", "spectre", "baron", "cacodemon")
+MELEE_BOSS = ("demon", "spectre", "baron", "cacodemon")
+SG_NEAR = 500                          # a shotgun guy nearer than this is a shotgun target, farther a chaingun one
 WEAPON_RANGE = 350                     # zombiemen/imps all at least this far: chaingun fight
-WEAPON_CLOSE = 250                     # any enemy nearer, or a heavy one within HEAVY_CLOSE: keep the weapon in hand
-HEAVY_CLOSE = 400
+WEAPON_CLOSE = 250                     # any enemy nearer: keep the weapon in hand (mid-fight)
+HEAVY_CLOSE = {"shotgun guy": 300, "demon": 400, "spectre": 400, "baron": 0, "cacodemon": 300}
+BURST = 450                            # an enemy in the crosshair nearer than this: keep shooting what is in hand
+SWITCH_GAP = 6                         # seconds after a weapon change before the next switch
 SHELLS_LOW = 8                         # fewer shells: chaingun unless a Baron is in view
-SHELLS_BACK = 12                       # chaingun -> shotgun for a heavy enemy only with this many shells
+SHELLS_BACK = 12                       # chaingun -> shotgun for a shotgun target only with this many shells
 SHELLS_PISTOL = 4                      # no chaingun: pistol for zombiemen/imps at range below this many shells
 CHAINGUN_MIN = 30                      # bullets worth switching to the chaingun for
 PISTOL_MIN = 20
 
 
 def _weapon_choice(f: dict) -> str | None:
-    if f["switching"] or any(c.startswith("weapon_") for c in f["recent"][-3:] + [f["last"] or ""]):
+    held, carried, en = f["weapon"], f["carried"], f["enemies"]
+    shells = f["shells"] if held == "shotgun" else carried.get("shotgun", 0)
+    if held in ("chaingun", "pistol") and f["bullets"] < 10 and shells > 0 and not f["switching"]:
+        return "weapon_shotgun"                                # nearly dry: the shells now, not at 0 mid-burst
+    if (f["switching"] or f["weapon_ago"] < SWITCH_GAP
+            or any(c.startswith("weapon_") for c in f["recent"][-3:] + [f["last"] or ""])):
         return None                                            # hysteresis: one switch, then fight with it
-    en = f["enemies"]
     near = min((e["dist"] for e in en), default=1e9)
-    heavy = [e for e in en if e["kind"] in HEAVY]
     if (f["incoming"] or f["attacker"] is not None or f["on_nukage"] or near < WEAPON_CLOSE
-            or any(e["dist"] < HEAVY_CLOSE for e in heavy)
+            or any(e["dist"] < HEAVY_CLOSE.get(e["kind"], 0) for e in en)
+            or any(e["crosshair"] and e["dist"] < BURST for e in en)
             or min(f["drops"].values(), default=1e9) < 200):
         return None
-    held, carried = f["weapon"], f["carried"]
     baron = any(e["kind"] == "baron" for e in en)
-    ranged = bool(en) and not heavy and near >= WEAPON_RANGE
+    sg_target = any(e["kind"] in MELEE_BOSS or e["kind"] == "shotgun guy" and e["dist"] < SG_NEAR for e in en)
+    ranged = bool(en) and not sg_target and near >= WEAPON_RANGE
     if held == "shotgun":
         if f["reload"] > 0.1 or baron:
             return None
@@ -753,10 +762,7 @@ def _weapon_choice(f: dict) -> str | None:
             return "weapon_pistol"
         return None
     if held in ("chaingun", "pistol"):
-        shells = carried.get("shotgun", 0)
-        if (heavy and shells >= SHELLS_BACK or baron and shells >= SHELLS_PISTOL
-                or f["bullets"] < (10 if held == "chaingun" else 5) and shells > 0
-                or held == "pistol" and shells >= SHELLS_LOW):
+        if sg_target and shells >= SHELLS_BACK or baron and shells >= SHELLS_PISTOL or held == "pistol" and shells >= SHELLS_LOW:
             return "weapon_shotgun"
         if held == "pistol" and carried.get("chaingun", 0) >= CHAINGUN_MIN:
             return "weapon_chaingun"
