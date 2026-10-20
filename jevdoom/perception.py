@@ -441,16 +441,21 @@ class Perception:
         reclosed = {i for i in wm.door_sectors & self.doors_seen_open
                     if self.m.sector_tag[i] and i in obs.heights and obs.heights[i][1] - obs.heights[i][0] < PLAYER_HEIGHT
                     and abs(obs.heights[i][1] - self.door_ceil_prev.get(i, -1e9)) < 1}
-        # A floor that has come to rest off the grid's value by less than LIVE_DELTA: E1M3's last stairs (W1 stair
-        # build, tag 14) rise for ~9 s; the grid caught them mid-rise (58.5 of 56-128) and never again, the top step
-        # stayed out of reach and every exit plan failed until the run timed out in a side room.
+        # A floor that has come to rest off the grid's value by less than LIVE_DELTA, while plans fail: E1M3's last
+        # stairs (W1 stair build, tag 14) rise for ~9 s; the grid caught them mid-rise (58.5 of 56-128) and never
+        # again, the top step stayed out of reach and every exit plan failed until the run timed out in a side room.
+        # Only as a repair for failing plans: on E1M8 the rebuilt grid at the lowered wall ring (tag 666) routed
+        # the teacher into a pit between ledges (8 of 16 stuck at 66%).
         prev, self.live_prev = self.live_prev, dict(obs.heights)
+        failing = obs.tic - self.plan_fail_tic < 3 * self.REPLAN_TICS
         rested = [i for i, (f, c) in obs.heights.items()
-                  if i not in skip and i < len(base.m.floor) and prev.get(i) == (f, c)
+                  if failing and i not in skip and i < len(base.m.floor) and prev.get(i) == (f, c)
                   and (abs(f - base.m.floor[i]) > 1 or abs(c - base.m.ceil[i]) > 1)]
         # While such a floor moves, plans on any snapshot of it fail or detour (E1M3: mid-rise stairs sent the exit
         # route through the north room past two shotgun guys); _route_target keeps a route that crosses it.
-        self.moving_set = {i for i, (f, c) in obs.heights.items() if i not in skip and i in prev and abs(f - prev[i][0]) > 0.5}
+        # Rising floors only: a lowering floor opens ways (E1M8's tag 666 wall ring), and holding the route while it
+        # sank left the teacher in a pit between its ledges.
+        self.moving_set = {i for i, (f, c) in obs.heights.items() if i not in skip and i in prev and f - prev[i][0] > 0.5}
         if not changed and not settled and not rested and reclosed == wm.door_sectors - base.m.door_sectors:
             return base
         floor, ceil = wm.floor.copy(), wm.ceil.copy()
