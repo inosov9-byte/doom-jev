@@ -498,11 +498,6 @@ def _decide(f: dict) -> str:
             return turn + "_fire"
         return turn
 
-    # 2b. an imp pack ahead beyond fighting range: let it come (_imp_pack_hold).
-    hold = _imp_pack_hold(f, sprint, wading)
-    if hold is not None:
-        return hold
-
     # 3. shot from out of view: face the attacker if we can fight back
     if f["attacker"] is not None and has_ammo and not sprint and not wading:
         return turn_toward(f["attacker"])
@@ -691,33 +686,6 @@ def _flip_flop(f: dict) -> bool:
     """The last commands alternate between turning left and right: rules are undoing each other."""
     turns = [c.split("_")[1] for c in f["recent"][-3:] if c.startswith("turn_") and c != "turn_around"]
     return len(turns) == 3 == len(f["recent"][-3:]) and turns[0] == turns[2] != turns[1]
-
-
-PACK_FAR = 750                # imps seen this far count toward a pack ahead
-
-
-def _imp_pack_hold(f: dict, sprint: bool, wading: bool) -> str | None:
-    """Two or more imps in view, all beyond IMP_ENGAGE: stop walking the route into them, face the nearest and
-    wait for them to come into range; fireballs from 400+ units arrive late enough to sidestep (rule 1b). E1M3's
-    stair corridor after the last trigger: the teacher walked up the stairs into a pack of 3-5 imps at 480-630
-    units and fought them at 150-200 in the open (most imp deaths at e1m3-late). No gunmen in range, no low ammo."""
-    if sprint or wading or f["on_lift"] or f["goal"] in KILL_GOALS or f["weapon"] != "shotgun":
-        return None
-    imps = [e for e in f["enemies"] if e["kind"] == "imp" and e["angle"] is not None and e["dist"] <= PACK_FAR]
-    if len(imps) < 2 or any(e["dist"] <= IMP_ENGAGE for e in imps):
-        return None
-    if any(e["kind"] != "imp" and e["dist"] <= HITSCAN_ENGAGE for e in f["enemies"]) or f["attacker"] is not None:
-        return None
-    # Imps on a ledge or behind a window never come: after three waits in a row, one step of the route.
-    if f["recent"][-3:] == ["use"] * 3:
-        return None
-    t = min(imps, key=lambda e: e["dist"])
-    if abs(t["angle"]) >= 7.5:
-        return turn_toward(t["angle"])
-    ahead = f["rays"].get("ahead", (1500.0, "open"))
-    if not ahead[1].startswith(("door", "switch", "exit", "lift")) or ahead[0] > 2 * USE_REACH:
-        return "use"            # nothing within reach to press: a wait
-    return None
 
 
 BARREL_AIM_NEAR = 170         # a barrel this close in the shotgun's spread is not shot past (blast 128 + box)
