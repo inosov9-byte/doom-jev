@@ -82,6 +82,9 @@ class Perception:
         self.at_goal = False                          # close to the goal with a clear walk to it
         self.hold: list | None = None                 # hold stage: [stage, began, arrived, last threat] tics
         self.live_check_tic = -10**9
+        self.live_prev: dict = {}                 # sector heights at the previous live check
+        self.moving_set: set[int] = set()       # floors (not doors, not lifts) seen moving at the last live check
+        self.hold_start = None                   # tic the route hold for a moving floor began
         self.plan_fail_tic = -10**9
         self.chase_tic = -10**9
         # Path planning never runs inside describe(): A* took up to 0.7 s per decision on E1M8. Each
@@ -473,6 +476,7 @@ class Perception:
         return f"{_side(obs.bearing_to(*target))}, {left:.0f} units left"
 
     LIVE_CHECK_TICS = 35      # compare live sector heights with the route grid at most once a second
+    MOVING_HOLD_TICS = 15 * 35  # at most this long without replanning while a floor on the route moves
     LIVE_DELTA = 24.0         # a floor or ceiling this far from the grid's value means the map changed
 
     def _stage_grid(self, obs: Obs) -> NavGrid:
@@ -497,7 +501,22 @@ class Perception:
         reclosed = {i for i in wm.door_sectors & self.doors_seen_open
                     if self.m.sector_tag[i] and i in obs.heights and obs.heights[i][1] - obs.heights[i][0] < PLAYER_HEIGHT
                     and abs(obs.heights[i][1] - self.door_ceil_prev.get(i, -1e9)) < 1}
-        if not changed and not settled and reclosed == wm.door_sectors - base.m.door_sectors:
+        # A floor that has come to rest off the grid's value by less than LIVE_DELTA, while plans fail: E1M3's last
+        # stairs (W1 stair build, tag 14) rise for ~9 s; the grid caught them mid-rise (58.5 of 56-128) and never
+        # again, the top step stayed out of reach and every exit plan failed until the run timed out in a side room.
+        # Only as a repair for failing plans: on E1M8 the rebuilt grid at the lowered wall ring (tag 666) routed
+        # the teacher into a pit between ledges (8 of 16 stuck at 66%).
+        prev, self.live_prev = self.live_prev, dict(obs.heights)
+        failing = obs.tic - self.plan_fail_tic < 3 * self.REPLAN_TICS
+        rested = [i for i, (f, c) in obs.heights.items()
+                  if failing and i not in skip and i < len(base.m.floor) and prev.get(i) == (f, c)
+                  and (abs(f - base.m.floor[i]) > 1 or abs(c - base.m.ceil[i]) > 1)]
+        # While such a floor moves, plans on any snapshot of it fail or detour (E1M3: mid-rise stairs sent the exit
+        # route through the north room past two shotgun guys); _route_target keeps a route that crosses it.
+        # Rising floors only: a lowering floor opens ways (E1M8's tag 666 wall ring), and holding the route while it
+        # sank left the teacher in a pit between its ledges.
+        self.moving_set = {i for i, (f, c) in obs.heights.items() if i not in skip and i in prev and f - prev[i][0] > 0.5}
+        if not changed and not settled and not rested and reclosed == wm.door_sectors - base.m.door_sectors:
             return base
         floor, ceil = wm.floor.copy(), wm.ceil.copy()
         for i, (f, c) in obs.heights.items():
@@ -551,6 +570,17 @@ class Perception:
         elif kind == "route":
             self.plan_fail_tic = obs.tic
 
+    def _route_on_moving(self, obs: Obs) -> bool:
+        """Hold replans: the route ahead crosses a floor that is moving (at most MOVING_HOLD_TICS per movement).
+        Floors moving elsewhere do not hold (E1M8: a lift rising across the map held the Baron chase's replans)."""
+        if not self.moving_set:
+            self.hold_start = None
+            return False
+        on = any(self.grid.sector_at(*p) in self.moving_set for p in self.route[self.idx:self.idx + 120:2])
+        if on and self.hold_start is None:
+            self.hold_start = obs.tic
+        return on and obs.tic - self.hold_start < self.MOVING_HOLD_TICS
+
     def _route_target(self, obs: Obs):
         pos = (obs.x, obs.y)
         grid = self._stage_grid(obs)
@@ -586,7 +616,8 @@ class Perception:
             # into a 112-unit ledge 5 units away for 45 s, until the run ended as stuck).
             if off <= 96 and self._below_route(obs, self.route[best]):
                 off = math.inf
-        if (not self.route or off > 96 or self.replan) and obs.tic - self.plan_fail_tic >= self.REPLAN_TICS:
+        if ((not self.route or (off > 96 or self.replan) and not self._route_on_moving(obs))
+                and obs.tic - self.plan_fail_tic >= self.REPLAN_TICS):
             if self._job is None:
                 self.replan = False
             self._submit("route", grid, pos, gpos)
@@ -840,6 +871,8 @@ class Perception:
         self.stage = 0
         self.hold = None
         self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
+        self.live_prev = {}
+        self.moving_set, self.hold_start = set(), None
         self._job = None
 
 
