@@ -114,11 +114,15 @@ class Executor:
 
     @staticmethod
     def _weapon(obs: Obs, a) -> None:
-        # A fixed rule, not a decision: the best weapon with ammo. The rocket launcher only while
+        # A fixed rule, not a decision: the best weapon with ammo. The rocket launcher only against a Baron while
         # every visible enemy is far enough away that the blast cannot reach the player
         # (switch to it at 300+ units, keep it down to 200), never with nothing in view.
+        # Barons only: a rocket bursts on the first thing it touches, and against imps and gunmen in cluttered rooms
+        # it went off on a pillar, a door edge or a barrel beside the player (E1M7's start: 4 of 16 runs died at
+        # 37-60 health the moment a rocket left; E1M6: 6 deaths with the launcher up).
         near = min((obs.dist_to(m.x, m.y) for m in obs.monsters if m.visible), default=None)
-        safe = near is not None and near >= (200 if obs.weapon == 5 else 300)
+        baron = any(m.visible and m.name == "BaronOfHell" for m in obs.monsters)
+        safe = baron and near is not None and near >= (200 if obs.weapon == 5 else 300)
         if obs.has_launcher and obs.rockets > 0 and safe:
             want = 5
         elif obs.has_shotgun and obs.shells > 0:
