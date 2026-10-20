@@ -244,7 +244,7 @@ def solve(m: MapData, start: tuple[float, float], max_depth: int = 7, verbose: b
     return None
 
 
-CACHE = r"C:\tmp\jev-doom\cache\progression"
+CACHE = os.environ.get("JEV_PROGRESSION_CACHE", r"C:\tmp\jev-doom\cache\progression")
 
 
 def load_or_solve(m: MapData, start: tuple[float, float]) -> list[Subgoal]:

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import subprocess
 import sys
 import types
@@ -35,39 +36,61 @@ from pathlib import Path
 import numpy as np
 
 from .env import blank_action, make_game, observe
-from .loadout import apply as apply_loadout
 
 TICRATE = 35
 REPO = Path(__file__).resolve().parent.parent
 FFMPEG = r"C:\tmp\jev-doom\bin\ffmpeg.exe"
 
 
+GIT_REPO = Path(os.environ.get("JEVDOOM_GIT_REPO", REPO))   # where recorded commits are looked up
+
+
 def _git_show(commit: str, path: str) -> str | None:
-    r = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=REPO, capture_output=True, text=True,
+    r = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=GIT_REPO, capture_output=True, text=True,
                        encoding="utf-8")
     return r.stdout if r.returncode == 0 else None
 
 
-def load_executor(commit: str | None):
-    """Executor class as of the run's commit (working copy if unknown or identical)."""
-    from . import executor as cur
+def load_at_commit(commit: str | None, mods: tuple[str, ...] = ("commands", "executor")) -> tuple[dict, str]:
+    """The given jevdoom modules as of the run's commit (working copy if unknown or identical). Each may
+    import env and the other modules listed; env (the ViZDoom wrapper) always comes from the working copy."""
+    import importlib
+    cur = {m: importlib.import_module(f"{__package__}.{m}") for m in mods}
     base = (commit or "").replace("-dirty", "")
-    srcs = {m: _git_show(base, f"jevdoom/{m}.py") for m in ("commands", "executor")} if base else {}
-    now = {m: (REPO / "jevdoom" / f"{m}.py").read_text(encoding="utf-8") for m in ("commands", "executor")}
+    srcs = {m: _git_show(base, f"jevdoom/{m}.py") for m in mods} if base else {}
+    now = {m: (REPO / "jevdoom" / f"{m}.py").read_text(encoding="utf-8") for m in mods}
     if not srcs or any(v is None for v in srcs.values()) or all(
             srcs[m].replace("\r\n", "\n") == now[m].replace("\r\n", "\n") for m in srcs):
-        return cur.Executor, "working copy"
+        return cur, "working copy"
     pkg = f"_jevdoom_{base}"
-    sys.modules[pkg] = types.ModuleType(pkg)
-    sys.modules[pkg].__path__ = []
-    from . import env
-    sys.modules[f"{pkg}.env"] = env
-    for m in ("commands", "executor"):
-        mod = types.ModuleType(f"{pkg}.{m}")
-        mod.__package__ = pkg
-        sys.modules[f"{pkg}.{m}"] = mod
-        exec(compile(srcs[m], f"{base}:jevdoom/{m}.py", "exec"), mod.__dict__)
-    return sys.modules[f"{pkg}.executor"].Executor, f"commit {base}"
+    if pkg not in sys.modules:
+        sys.modules[pkg] = types.ModuleType(pkg)
+        sys.modules[pkg].__path__ = []
+        from . import env
+        sys.modules[f"{pkg}.env"] = env
+    out = {}
+    for m in mods:                    # in order: a module may import the ones before it
+        name = f"{pkg}.{m}"
+        if name not in sys.modules:
+            mod = types.ModuleType(name)
+            mod.__package__ = pkg
+            sys.modules[name] = mod
+            exec(compile(srcs[m], f"{base}:jevdoom/{m}.py", "exec"), mod.__dict__)
+        out[m] = sys.modules[name]
+    return out, f"commit {base}"
+
+
+def load_executor(commit: str | None):
+    """Executor class as of the run's commit (working copy if unknown or identical)."""
+    mods, src = load_at_commit(commit)
+    return mods["executor"].Executor, src
+
+
+def load_apply_loadout(commit: str | None):
+    """loadout.apply as of the run's commit: the start state must be built the way the run built it (before
+    d2dc68d, partial armor was dropped and ammo above the normal maximum clipped)."""
+    mods, _ = load_at_commit(commit, ("loadout",))
+    return mods["loadout"].apply
 
 
 class _SyncPool:
@@ -114,6 +137,7 @@ def replay(run_dir: str | Path, out_dir: str | Path, *, wad: str = r"C:\tmp\jev-
     for r in rows:
         by_tic.setdefault(r["tic"], []).append(r)
     Executor, exe_src = load_executor(summ.get("commit"))
+    apply_loadout = load_apply_loadout(summ.get("commit"))
     loadout = summ.get("start_loadout")
     end_tic = round(summ["game_seconds"] * TICRATE)
 
