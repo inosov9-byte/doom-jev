@@ -79,6 +79,7 @@ class Perception:
         self._reach: dict[tuple, tuple] = {}           # (id(grid), goal) -> (grid, cells the goal is reachable from)
         self.at_goal = False                          # close to the goal with a clear walk to it
         self.live_check_tic = -10**9
+        self.live_prev: dict = {}                 # sector heights at the previous live check
         self.plan_fail_tic = -10**9
         self.chase_tic = -10**9
         # Path planning never runs inside describe(): A* took up to 0.7 s per decision on E1M8. Each
@@ -437,7 +438,14 @@ class Perception:
         reclosed = {i for i in wm.door_sectors & self.doors_seen_open
                     if self.m.sector_tag[i] and i in obs.heights and obs.heights[i][1] - obs.heights[i][0] < PLAYER_HEIGHT
                     and abs(obs.heights[i][1] - self.door_ceil_prev.get(i, -1e9)) < 1}
-        if not changed and not settled and reclosed == wm.door_sectors - base.m.door_sectors:
+        # A floor that has come to rest off the grid's value by less than LIVE_DELTA: E1M3's last stairs (W1 stair
+        # build, tag 14) rise for ~9 s; the grid caught them mid-rise (58.5 of 56-128) and never again, the top step
+        # stayed out of reach and every exit plan failed until the run timed out in a side room.
+        prev, self.live_prev = self.live_prev, dict(obs.heights)
+        rested = [i for i, (f, c) in obs.heights.items()
+                  if i not in skip and i < len(base.m.floor) and prev.get(i) == (f, c)
+                  and (abs(f - base.m.floor[i]) > 1 or abs(c - base.m.ceil[i]) > 1)]
+        if not changed and not settled and not rested and reclosed == wm.door_sectors - base.m.door_sectors:
             return base
         floor, ceil = wm.floor.copy(), wm.ceil.copy()
         for i, (f, c) in obs.heights.items():
@@ -786,6 +794,7 @@ class Perception:
         self.barrels, self.bursting = {}, {}
         self.stage = 0
         self.live_grids, self.live_check_tic, self.plan_fail_tic = {}, -10**9, -10**9
+        self.live_prev = {}
         self._job = None
 
 

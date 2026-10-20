@@ -11,7 +11,6 @@ open a closed door on the way > turn toward the route > get unstuck > walk forwa
 """
 from __future__ import annotations
 
-import math
 import os
 import re
 
@@ -688,50 +687,9 @@ def _flip_flop(f: dict) -> bool:
     return len(turns) == 3 == len(f["recent"][-3:]) and turns[0] == turns[2] != turns[1]
 
 
-BARREL_AIM_NEAR = 170         # a barrel this close in the shotgun's spread is not shot past (blast 128 + box)
-
-
-def _fire_aim(cmd: str) -> float | None:
-    """Bearing the shot of a firing command goes out at (positive = left), or None for a command that does not fire."""
-    if cmd == "fire" or cmd.startswith("fire_strafe_"):
-        return 0.0
-    m = re.match(r"turn_(left|right)_(\d+)_fire$", cmd)
-    if m:
-        return float(m.group(2)) * (1 if m.group(1) == "left" else -1)
-    return None
-
-
-def _barrel_in_aim(f: dict, cmd: str) -> bool:
-    """The command fires with the reported barrel close and inside the shotgun's spread around the aim. The rays
-    see a barrel only dead ahead or at 30 degrees: E1M3's stair corridor has barrels at its foot, and shots at
-    imps beyond them set them off 40-100 units from the teacher (8 of 29 deaths at e1m3-late, 44-77 health each)."""
-    b = f["barrel"]
-    aim = _fire_aim(cmd)
-    if aim is None or b is None or b[1] is None or b[0] >= BARREL_AIM_NEAR:
-        return False
-    return abs(b[1] - aim) <= 8 + math.degrees(math.atan2(20, max(b[0], 1.0)))
-
-
-def _barrel_hold(f: dict, cmd: str) -> str:
-    """Replace a shot past a near barrel with a step that opens the distance or the angle: back while there is
-    room (the barrel then falls outside its blast before the next shot), else a sidestep away from its side."""
-    if not _barrel_in_aim(f, cmd):
-        return cmd
-    last = f["last"] or ""
-    if (f["rays"].get("behind", (0.0, ""))[0] > 120 and not _unsafe(f, "back")
-            and not (f["blocked"] and last == "back")):
-        return "back"
-    side = "right" if f["barrel"][1] >= (_fire_aim(cmd) or 0.0) else "left"
-    for s in (side, "left" if side == "right" else "right"):
-        mv = "strafe_" + s
-        if f["rays"].get("60 " + s, (0.0, ""))[0] > 64 and not _unsafe(f, mv) and not (f["blocked"] and last == mv):
-            return mv
-    return cmd.replace("_fire", "") if cmd.startswith("turn_") else cmd
-
-
 def decide(state: str) -> str:
     f = parse_state(state)
-    cmd = _barrel_hold(f, _decide(f))
+    cmd = _decide(f)
     # Still sliding from a run toward a drop: brake. Doom momentum carries a run ~150 units after the
     # next command, and a turn does not stop it (E1M3: turned at the walkway's bend mid-slide, fell in).
     if (f["last"] == "forward" and f["moved"] >= 70 and cmd != "back"
