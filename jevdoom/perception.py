@@ -25,6 +25,7 @@ LINE_OF_FIRE = os.environ.get("JEVDOOM_LINE_OF_FIRE", "1") == "1"
 SHOTGUN_REFIRE = 37      # tics between shotgun shots (Doom)
 HISTORY = 4              # commands listed in "Recent commands"
 WEAPON_RECENT = 10       # seconds a weapon change is reported
+DODGE_ALL = os.environ.get("JEVDOOM_DODGE_ALL", "1") == "1"   # sidestep side weighs every projectile in flight (2026-10-20)
 # A drop the player cannot climb back out of toward the current goal (E1M3: the toxic ring around the
 # walkway; fights and dodges pushed the expert off the edge on every seed, and it died in the pit).
 DEAD_DROP = "drop with no way back"
@@ -344,8 +345,10 @@ class Perception:
 
     def incoming(self, obs: Obs) -> tuple[float, str] | None:
         """The soonest projectile whose straight path passes within DODGE_MISS of the player: seconds
-        to closest approach and the sidestep that moves away from its path."""
-        best = None
+        to closest approach and the sidestep that moves away from its path. With DODGE_ALL the side is
+        the one whose sidestep path meets fewer of all the projectiles in flight (and keeps clear of
+        barrels): E1M6's red key wave, 15% of the damage hit right after a sidestep, from another fireball."""
+        best, n_on = None, 0
         for _name, x, y, vx, vy in obs.projectiles:
             rx, ry = x - obs.x, y - obs.y
             v2 = vx * vx + vy * vy
@@ -363,7 +366,42 @@ class Perception:
             side = "right" if mx * math.cos(th) + my * math.sin(th) > 0 else "left"
             if best is None or t < best[0]:
                 best = (t / 35, side)
-        return best
+            n_on += 1
+        self.on_course = n_on
+        if best is None or not DODGE_ALL:
+            return best
+        hits = {sd: self._dodge_hits(obs, sd) for sd in ("left", "right")}
+        side = best[1]
+        other = "right" if side == "left" else "left"
+        if hits[other] < hits[side]:
+            side = other
+        return best[0], side
+
+    STRAFE_V = 13.3           # units per tic a running sidestep tends to (strafe thrust 1.25, friction 0.906)
+    STRAFE_DELAY = 3          # tics from the view to the first strafe tic (decision lag + one tic)
+
+    def _dodge_hits(self, obs: Obs, side: str) -> float:
+        """Projectiles in flight that a sidestep this way would meet within DODGE_HORIZON, plus one for a
+        barrel within 110 units of where the sidestep ends (a stray shot or the next fireball sets it off)."""
+        th = math.radians(obs.angle + (90 if side == "left" else -90))
+        ux, uy = math.cos(th), math.sin(th)
+
+        def disp(t: float) -> float:
+            t = max(0.0, t - self.STRAFE_DELAY)
+            return self.STRAFE_V * (min(t, 20) - (1 - 0.906 ** min(t, 20)) * 0.906 / 0.094)
+        n = 0.0
+        for _name, x, y, vx, vy in obs.projectiles:
+            if vx * vx + vy * vy < 1:
+                continue
+            for t in range(0, int(self.DODGE_HORIZON * 35) + 1, 2):
+                d = disp(t)
+                if math.hypot(x + vx * t - (obs.x + ux * d), y + vy * t - (obs.y + uy * d)) < self.DODGE_MISS:
+                    n += 1
+                    break
+        end = (obs.x + ux * disp(23), obs.y + uy * disp(23))
+        if any(so.name == "ExplosiveBarrel" and math.dist(end, (so.x, so.y)) < 110 for so in obs.solids):
+            n += 1
+        return n
 
     # -- route compass ----------------------------------------------------------
     def keys_held(self, obs: Obs) -> set[str]:
@@ -677,6 +715,8 @@ class Perception:
         inc = self.incoming(obs)
         if inc:
             parts.append(f"Fireball incoming in {inc[0]:.1f} s, sidestep {inc[1]}.")
+            if DODGE_ALL and self.on_course >= 2:      # a volley: shooting one imp still leaves the others' fireballs
+                parts.append(f"{self.on_course} fireballs on course to hit.")
         bosses = [mo for mo in vis if mo.name in self.COVER_FROM]
         if bosses:
             cv = self.cover(obs, bosses[0])

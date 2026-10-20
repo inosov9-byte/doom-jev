@@ -45,6 +45,7 @@ COVER_HEALTH = 70             # below this, a hit from a boss sends the expert b
 BARREL_BLAST = 160             # barrel explosion radius is 128; never shoot one closer than this
 BURST_FLEE = 210               # a barrel about to explode this close: move away from it first
 BARREL_KEEP = 135              # a barrel blast does 128 minus the box distance (axis distance less 16): keep this far under fire
+VOLLEY_DODGE = os.environ.get("JEVDOOM_VOLLEY_DODGE", "1") == "1"   # 2+ fireballs on course: sidestep even with a ready shotgun (2026-10-20)
 DODGE_MIN = 0.25               # seconds: a fireball arriving sooner is not dodged from a stand
 KILL_GOALS = ("baron of hell",)
 HOLD = os.environ.get("JEVDOOM_HOLD", "1") == "1"
@@ -119,6 +120,8 @@ def parse_state(s: str) -> dict:
     f["reload"] = float(m.group(1)) if m else 0.0
     m = re.search(r"Fireball incoming in ([\d.]+) s, sidestep (left|right)\.", s)
     f["incoming"] = (float(m.group(1)), m.group(2)) if m else None
+    m = re.search(r"(\d+) fireballs on course to hit\.", s)
+    f["volley"] = int(m.group(1)) if m else (1 if f["incoming"] else 0)
     m = re.search(r"Escape from [a-z ]+: (\d+) units open, ([^.]+)\.", s)
     f["escape"] = (float(m.group(1)), _angle(m.group(2))) if m else None
     m = re.search(r"Cover from [a-z ]+: (\d+) units, ([^.]+)\.", s)
@@ -673,6 +676,11 @@ def _dodge_fireball(f: dict) -> bool:
     # imps 42-65 units away, 26 and 16 from claws). Backing off facing it (the fight rules) gets out of reach.
     if any(e["kind"] == "imp" and e["dist"] <= 130 for e in f["enemies"]):
         return False
+    # Two or more fireballs on course (a volley from several imps): shooting one imp leaves the rest in flight.
+    # E1M6's red key wave: 164 of 1058 wave damage came from warned fireballs the ready shotgun stood and fired
+    # through. Still not with a gunman within 300: his hitscan is what the sidestep walks into.
+    if VOLLEY_DODGE and f["volley"] >= 2 and not any(e["kind"] in HITSCAN and e["dist"] <= 300 for e in f["enemies"]):
+        return True
     if f["reload"] <= RELOAD_DODGE and any(e["crosshair"] and e["dist"] <= HITSCAN_ENGAGE for e in f["enemies"]):
         return False
     # A ready shotgun with an enemy near: turn and shoot (one tic to turn) rather than dodge. A shotgun guy
