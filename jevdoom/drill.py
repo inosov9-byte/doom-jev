@@ -141,8 +141,14 @@ def build_perception(m, loadout, carry: bool, needs: bool = True):
     return perc, nd, goals, stage_len
 
 
-def restore(source: str | Path, takeover: int, *, timeout_s: int = 400, record: bool = False):
-    """Replay the source run up to the takeover tic. Returns the live game and everything the loop needs."""
+RECENT_TICS = 15 * TICRATE    # before the takeover: every decision checked, every tic rendered in the last 2 s
+
+
+def restore(source: str | Path, takeover: int, *, timeout_s: int = 400, fast: bool = True):
+    """Replay the source run up to the takeover tic. Returns the live game and everything the loop needs.
+    fast: render only the views perception reads and the tics checked against the log (a 640x480 frame costs
+    ~15 ms, the game tic itself ~0.1 ms); in between the executor sees the last rendered view, which matters
+    only for its weapon rule. A replay that diverges from the log this way is redone with fast=False."""
     from .env import blank_action, make_game, observe
     from .replay import load_apply_loadout, load_executor
     from .wadmap import load_map
@@ -174,12 +180,17 @@ def restore(source: str | Path, takeover: int, *, timeout_s: int = 400, record: 
     exe = Executor()
     tic, obs, last_cmd, prev_ammo, shot_tic = 0, None, None, None, -10**6
     mismatches, n_dec = [], 0
+    checked = {r["tic"] for i, r in enumerate(rows) if r["tic"] >= takeover - RECENT_TICS or i % 10 == 0}
+    render = set(by_obs) | checked | set(range(takeover - 2 * TICRATE, takeover + 1))
+    rendered = True                           # the warm-up's last tic updated the state
     while tic < takeover and not g.is_episode_finished():
-        obs = observe(g, tic)
-        ammo = (obs.weapon, {3: obs.shells, 5: obs.rockets}.get(obs.weapon, obs.bullets))
-        if prev_ammo is not None and ammo[0] == prev_ammo[0] and ammo[1] < prev_ammo[1]:
-            shot_tic = tic
-        prev_ammo, obs.shot_tic = ammo, shot_tic
+        if rendered or obs is None:
+            obs = observe(g, tic)
+        if rendered:
+            ammo = (obs.weapon, {3: obs.shells, 5: obs.rockets}.get(obs.weapon, obs.bullets))
+            if prev_ammo is not None and ammo[0] == prev_ammo[0] and ammo[1] < prev_ammo[1]:
+                shot_tic = tic
+            prev_ammo, obs.shot_tic = ammo, shot_tic
         for r in by_obs.get(tic, []):         # the view the worker described: keeps perception's state in step
             try:
                 perc.describe(obs, last_cmd=last_cmd)
@@ -189,6 +200,10 @@ def restore(source: str | Path, takeover: int, *, timeout_s: int = 400, record: 
                 last_cmd = r["choice"]
         for r in by_tic.get(tic, []):
             n_dec += 1
+            if tic not in checked:
+                if r.get("choice"):
+                    exe.start(r["choice"])
+                continue
             got = {"pos": [round(obs.x), round(obs.y)], "health": obs.health}
             if "dealt" in r:
                 got.update(dealt=round(obs.damage_dealt), hits=obs.hits)
@@ -197,7 +212,9 @@ def restore(source: str | Path, takeover: int, *, timeout_s: int = 400, record: 
                 mismatches.append({"decision": n_dec, "tic": tic, "diff": diff})
             if r.get("choice"):
                 exe.start(r["choice"])
-        g.make_action(exe.step(obs), 1)
+        rendered = not fast or (tic + 1) in render
+        g.set_action(exe.step(obs))
+        g.advance_action(1, rendered)
         tic += 1
     perc._planner = live_planner              # live play plans in the background again, as in play.py
     if nd is not None:
@@ -205,7 +222,7 @@ def restore(source: str | Path, takeover: int, *, timeout_s: int = 400, record: 
     return {"game": g, "exe": exe, "perc": perc, "needs": nd, "goals": goals, "stage_len": stage_len, "tic": tic,
             "last_cmd": last_cmd, "prev_ammo": prev_ammo, "shot_tic": shot_tic, "summary": summ, "rows": rows,
             "by_tic": by_tic, "mismatches": mismatches, "executor": exe_src, "loadout": loadout, "carry": carry,
-            "decisions_before": n_dec}
+            "decisions_before": n_dec, "fast": fast}
 
 
 # -- playing on from a state --------------------------------------------------------------------------------------
@@ -221,6 +238,9 @@ def drill(job: dict) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     limit = spot["timeout"]
     st = restore(job["source"], job["tic"], timeout_s=int(job["tic"] / TICRATE + limit + 30))
+    if st["mismatches"]:                       # the fast replay diverged (weapon rule on a stale view): every tic
+        st["game"].close()
+        st = restore(job["source"], job["tic"], timeout_s=int(job["tic"] / TICRATE + limit + 30), fast=False)
     g, exe, perc, nd, stage_len = st["game"], st["exe"], st["perc"], st["needs"], st["stage_len"]
     tic0 = tic = st["tic"]
     prev_ammo, shot_tic = st["prev_ammo"], st["shot_tic"]
@@ -355,7 +375,7 @@ def drill(job: dict) -> dict:
                    "takeover_offset_s": job.get("offset"), "takeover_state": start_state, "takeover_pos": start_pos,
                    "replay_mismatches": len(st["mismatches"]),
                    "first_divergence": st["mismatches"][0] if st["mismatches"] else None,
-                   "source_executor": st["executor"],
+                   "source_executor": st["executor"], "replay_fast": st["fast"],
                    "game_seconds": round(tic / TICRATE, 1), "drill_seconds": round((tic - tic0) / TICRATE, 1),
                    "wall_seconds": round(wall, 1), "kills": obs.kills if obs else 0,
                    "damage_taken": round(obs.damage_taken) if obs else 0,
