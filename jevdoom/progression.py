@@ -646,3 +646,116 @@ def stage_grids(m: MapData, goals: list[Subgoal], strict_lifts: bool = False,
         elif g.kind in ("switch", "walk", "shoot"):
             opened = opened | {g.tag}
     return grids
+
+
+# -- ambush holds -------------------------------------------------------------------------------------------
+# A key whose pickup spot is boxed in by walk-over door lines that open monster closets (E1M6's red key: four
+# closets, ~15 imps, shotgun guys and spectres). The route after the key led into the wave and half the runs
+# died within 20 s. A 'hold' stage after such a key walks back along the approach to a point few of the closet
+# monsters can see (E1M6: the corridor mouth the yard was entered by), faces the way they come and waits there
+# (perception ends the stage).
+AMBUSH_HOLD = os.environ.get("JEVDOOM_AMBUSH_HOLD", "0") == "1"
+AMBUSH_TRIGGER_NEAR = 128      # trigger line this close to the key
+AMBUSH_MIN = 3                 # closet monsters for a hold
+AMBUSH_ROOM_SECTORS = 6        # a closet is at most this many sectors behind its door
+HOLD_BACK = (250, 2000)        # path distance back from the key searched for the hold point
+HOLD_WALK_COST = 600           # route units back worth one closet monster fewer in sight (2D sight, no heights)
+HOLD_FACE = 250                # the hold point faces the approach route this far toward the key
+
+
+def _seg_x(p, q, a, b) -> bool:
+    d = lambda o, s, t: (s[0] - o[0]) * (t[1] - o[1]) - (s[1] - o[1]) * (t[0] - o[0])
+    return (d(p, q, a) * d(p, q, b) < 0) and (d(a, b, p) * d(a, b, q) < 0)
+
+
+def _sight_lines(m: MapData, open_tags: set[int]) -> list:
+    """Lines that block sight: one-sided, or two-sided with a shut sector (ceiling at the floor) on either side
+    unless that sector is a closet that will open."""
+    out = []
+    for l in m.lines:
+        if l.back == -1:
+            out.append((l.v1, l.v2))
+            continue
+        for s in (l.front, l.back):
+            if m.ceil[s] - m.floor[s] < 8 and int(m.sector_tag[s]) not in open_tags:
+                out.append((l.v1, l.v2))
+                break
+    return out
+
+
+def ambush_at(m: MapData, kpos: tuple[float, float]) -> tuple[set[int], list[tuple[float, float]]]:
+    """(closet tags, closet monster positions) opened by walk-over lines around a key, or (set(), [])."""
+    def near(l):
+        ax, ay = l.v1; bx, by = l.v2
+        vx, vy = bx - ax, by - ay
+        t = max(0.0, min(1.0, ((kpos[0] - ax) * vx + (kpos[1] - ay) * vy) / max(vx * vx + vy * vy, 1e-9)))
+        return math.dist(kpos, (ax + t * vx, ay + t * vy))
+    tags = {l.tag for l in m.lines if l.tag and DOOR_TRIGGERS.get(l.special) == "W" and near(l) <= AMBUSH_TRIGGER_NEAR}
+    if not tags:
+        return set(), []
+    g = NavGrid(m)
+    # The tagged sectors are the closet doors; the monsters stand in the rooms behind them: small groups of
+    # sectors reached only through those doors (not the key's own sector).
+    adj: dict[int, set[int]] = {}
+    for l in m.lines:
+        if l.back != -1:
+            adj.setdefault(l.front, set()).add(l.back)
+            adj.setdefault(l.back, set()).add(l.front)
+    doors = {i for i, t in enumerate(m.sector_tag) if int(t) in tags}
+    ksec, closets = g.sector_at(*kpos), set(doors)
+    for n in {n for d in doors for n in adj.get(d, ())} - doors:
+        comp, todo = {n}, [n]
+        while todo and len(comp) <= AMBUSH_ROOM_SECTORS:
+            for q in adj.get(todo.pop(), ()):
+                if q not in doors and q not in comp:
+                    comp.add(q); todo.append(q)
+        if ksec not in comp and len(comp) <= AMBUSH_ROOM_SECTORS:
+            closets |= comp
+    mons = [(float(t[0]), float(t[1])) for t in m.things if t[3] in MONSTER_THINGS and _on_skill(t)
+            and g.sector_at(t[0], t[1]) in closets]
+    return (tags, mons) if len(mons) >= AMBUSH_MIN else (set(), [])
+
+
+def with_ambush_holds(m: MapData, goals: list[Subgoal], start: tuple[float, float]) -> list[Subgoal]:
+    """After each ambush key, a 'hold' stage at the approach point fewest closet monsters can see. Off unless
+    JEVDOOM_AMBUSH_HOLD=1: E1M6 paired (seeds 1-20, two batches) red-key wave survival 24/40 with holds against
+    28/40 without; the runs that died never reached the hold point (1669 route units, 13 s under fire)."""
+    from .wadmap import DAMAGE_SECTORS
+    if not AMBUSH_HOLD:
+        return goals
+    out, grids = [], None
+    for i, g in enumerate(goals):
+        out.append(g)
+        if g.kind != "key":
+            continue
+        tags, mons = ambush_at(m, g.target)
+        if not mons:
+            continue
+        grids = grids or stage_grids(m, goals)
+        prev = goals[i - 1].pos if i else start
+        r = grids[i].plan(prev, g.pos)
+        if not r:
+            continue
+        walls = _sight_lines(m, tags)
+        seen = lambda p: sum(1 for q in mons if not any(_seg_x(p, q, a, b) for a, b in walls))
+        back, best, score = 0.0, None, math.inf
+        for j in range(len(r) - 1, 0, -1):
+            back += math.dist(r[j], r[j - 1])
+            p = r[j - 1]
+            if back < HOLD_BACK[0]:
+                continue
+            if back > HOLD_BACK[1]:
+                break
+            s = grids[i].sector_at(*p)
+            if s < 0 or int(m.special[s]) in DAMAGE_SECTORS:
+                continue
+            sc = seen(p) + back / HOLD_WALK_COST
+            if sc < score:
+                best, score = j - 1, sc
+        if best is None:
+            continue
+        ahead, k = 0.0, best
+        while k < len(r) - 1 and ahead < HOLD_FACE:
+            ahead += math.dist(r[k], r[k + 1]); k += 1
+        out.append(Subgoal("hold", "hold point", tuple(r[best]), tuple(r[k]), tag=len(mons)))
+    return out

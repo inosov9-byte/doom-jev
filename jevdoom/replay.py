@@ -104,7 +104,7 @@ class _SyncPool:
 
 def _perception(m, wad_map_start, loadout):
     from .perception import Perception
-    from .progression import Subgoal, load_or_solve, stage_grids, with_supply_detours, with_weapon_detours
+    from .progression import Subgoal, load_or_solve, stage_grids, with_ambush_holds, with_supply_detours, with_weapon_detours
     from .wadmap import exit_target, path_length
     start = wad_map_start
     try:
@@ -114,6 +114,7 @@ def _perception(m, wad_map_start, loadout):
     except RuntimeError:
         st, mid, _ = exit_target(m)
         goals = [Subgoal("exit", "exit", st, mid)]
+    goals = with_ambush_holds(m, goals, start)
     grids = stage_grids(m, goals)
     stage_len, stage_routes, here = [], [], start
     for gl, gr in zip(goals, grids):

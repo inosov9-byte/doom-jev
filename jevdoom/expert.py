@@ -50,6 +50,7 @@ KILL_GOALS = ("baron of hell",)
 HOLD = os.environ.get("JEVDOOM_HOLD", "1") == "1"
 HOLD_HEALTH = 50               # alone, a single shooter out of sight is waited for below this health
 DEAD_DROP = "drop with no way back"
+HOLD_GOAL = "hold point"       # planner stage after an ambush key (progression.with_ambush_holds): wait there
 # How far a move can carry the player, slide included (a run builds momentum that slides ~60-150 units
 # after the next command replaces it), and the drop rays it must keep clear of: a strafe goes 90
 # degrees sideways, which the 60 degree ray sees at a slant.
@@ -247,7 +248,7 @@ def _decide(f: dict) -> str:
     supply = walk_on and goal not in ("shotgun", "chaingun", "rocket launcher")
     guarded = walk_on and has_ammo and any(e["angle"] is not None and (
         e["dist"] <= 200 or supply and e["kind"] in SHOOTERS and e["dist"] <= IMP_ENGAGE) for e in f["enemies"])
-    if f["exit_near"] is not None and goal not in KILL_GOALS and not guarded:     # a kill target is fought, not walked onto
+    if f["exit_near"] is not None and goal not in KILL_GOALS and goal != HOLD_GOAL and not guarded:     # a kill target is fought, not walked onto
         d, a = f["exit_near"]
         if a is not None and abs(a) >= (2.5 if goal == "switch to shoot" else 7.5):
             return turn_toward(a)
@@ -304,7 +305,8 @@ def _decide(f: dict) -> str:
     crowd = sum(1 for e in f["enemies"] if e["dist"] <= 300) >= 2
     # Not near a key: the enemies are still there once it is taken (E1M4's blue key room: the expert ran at
     # three imps with the shotgun ready and lost 57 health).
-    sprint = ("key" not in goal and f["route_left"] is not None and f["route_left"] < 700 and not crowd) or f["health"] < 30
+    sprint = (("key" not in goal and goal != HOLD_GOAL and f["route_left"] is not None and f["route_left"] < 700 and not crowd)
+              or f["health"] < 30 or _to_hold_point(f))
     reach = (100 if sprint else ENGAGE) if has_ammo else FIST
     # Demons close the gap fast and only bite: shoot them on the way in rather than walking into them
     # (E1M8's opening: the expert walked into the barrel field to meet the pack).
@@ -506,7 +508,7 @@ def _decide(f: dict) -> str:
     #     wave, E1M7's start: the teacher re-entered the open and died to the group).
     u = f["unseen"]
     if (u is not None and HOLD and has_ammo and not sprint and not f["on_nukage"] and not f["on_lift"]
-            and goal not in KILL_GOALS and (u[0] >= 2 or f["health"] < HOLD_HEALTH) and u[3] is not None):
+            and goal not in KILL_GOALS and not _to_hold_point(f) and (u[0] >= 2 or f["health"] < HOLD_HEALTH and u[2] <= HITSCAN_ENGAGE) and u[3] is not None):
         if abs(u[3]) >= 30:
             return turn_toward(u[3])
         if not ahead[1].startswith(("door", "switch", "exit", "lift")) or ahead[0] > 2 * USE_REACH:
@@ -533,6 +535,10 @@ def _decide(f: dict) -> str:
     if items:
         p = min(items, key=lambda p: p["dist"])
         return _go_to(p["angle"], p["dist"])
+
+    hold = _at_hold_point(f)
+    if hold is not None:
+        return hold
 
     route = f["route"]
     # 4b. a barrel on the way, outside its blast: shoot it before walking up to it. E1M3's walkway runs
@@ -589,6 +595,23 @@ def _decide(f: dict) -> str:
         return _open_side(f, "strafe_")
 
     return "forward" if ahead[0] > (120 if f["on_nukage"] else 200) else "forward_short"
+
+
+def _to_hold_point(f: dict) -> bool:
+    """On the way back to a hold point after an ambush key: run there (fight only what is close, no waiting in the
+    open). E1M6: the teacher stopped to wait and fight in the yard as the closets opened and never got back."""
+    return f["goal"] == HOLD_GOAL and f["exit_near"] is None
+
+
+def _at_hold_point(f: dict) -> str | None:
+    """At a hold point (the planner's stage after an ambush key): face the way the closet monsters come and wait.
+    The fight rules above come first; the stage ends when the planner sees the wave gone quiet."""
+    if f["goal"] != HOLD_GOAL or f["exit_near"] is None:
+        return None
+    a = f["exit_near"][1]
+    if a is not None and abs(a) >= 15:
+        return turn_toward(a)
+    return "use"                # a wait
 
 
 def _lift_blocked(f: dict) -> str:
