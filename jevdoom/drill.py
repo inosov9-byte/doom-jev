@@ -249,6 +249,14 @@ def drill(job: dict) -> dict:
     if st["mismatches"]:                       # the fast replay diverged (weapon rule on a stale view): every tic
         st["game"].close()
         st = restore(job["source"], job["tic"], timeout_s=int(job["tic"] / TICRATE + limit + 30), fast=False)
+    if st["mismatches"]:                       # not replayable here (missing commit?): no drill from a wrong state
+        st["game"].close()
+        summary = {"arm": arm, "outcome": "invalid", "passed": False, "health_pass": None, "spot": job["spot"],
+                   "variant": job.get("variant", "cur"), "source": str(job["source"]), "source_tag": job.get("tag"),
+                   "takeover_tic": job["tic"], "replay_mismatches": len(st["mismatches"]),
+                   "first_divergence": st["mismatches"][0], "source_executor": st["executor"], "run_dir": str(run_dir)}
+        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+        return summary
     g, exe, perc, nd, stage_len = st["game"], st["exe"], st["perc"], st["needs"], st["stage_len"]
     tic0 = tic = st["tic"]
     prev_ammo, shot_tic = st["prev_ammo"], st["shot_tic"]
@@ -418,7 +426,9 @@ def _run_child(job: dict, root: Path, env_extra: dict) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     jf = run_dir / "job.json"
     jf.write_text(json.dumps(job))
-    env = {**os.environ, **env_extra, "JEVDOOM_GIT_REPO": str(REPO), "PYTHONDONTWRITEBYTECODE": "1"}
+    # Recorded commits are looked up in a git checkout: a variant root may be a plain copy (git archive).
+    env = {**os.environ, **env_extra, "JEVDOOM_GIT_REPO": os.environ.get("JEVDOOM_GIT_REPO", str(REPO)),
+           "PYTHONDONTWRITEBYTECODE": "1"}
     with (run_dir / "drill.log").open("w", encoding="utf-8") as lf:
         subprocess.run([sys.executable, "-m", "jevdoom.drill", "--one", str(jf)], cwd=root, env=env,
                        stdout=lf, stderr=subprocess.STDOUT)
@@ -441,7 +451,7 @@ def table(results: list[dict]) -> str:
     keys = sorted({(r.get("variant", "cur"), r["arm"]) for r in results})
     out = "| variant | arm | drills | pass | rate | died | stuck | timeout | other | median health at pass |\n|---|---|---|---|---|---|---|---|---|---|\n"
     for v, a in keys:
-        rs = [r for r in results if r.get("variant", "cur") == v and r["arm"] == a]
+        rs = [r for r in results if r.get("variant", "cur") == v and r["arm"] == a and r["outcome"] != "invalid"]
         n = len(rs)
         p = [r for r in rs if r.get("passed")]
         c = lambda o: sum(r["outcome"] == o for r in rs)
@@ -453,20 +463,25 @@ def table(results: list[dict]) -> str:
 
 
 def paired(results: list[dict]) -> str:
-    """Per source state: pass/fail of each variant x arm side by side, and discordant counts."""
+    """Per source state: each variant x arm against the first, counting states only one of them passed."""
+    results = [r for r in results if r["outcome"] != "invalid"]
     cols = sorted({(r.get("variant", "cur"), r["arm"]) for r in results})
     if len(cols) < 2:
         return ""
     states: dict = {}
     for r in results:
-        states.setdefault((r.get("source_tag"), r.get("takeover_tic")), {})[(r.get("variant", "cur"), r["arm"])] = r
-    a, b = cols[0], cols[1]
-    both = [s for s in states.values() if a in s and b in s]
-    only_a = sum(s[a].get("passed") and not s[b].get("passed") for s in both)
-    only_b = sum(s[b].get("passed") and not s[a].get("passed") for s in both)
-    return (f"\nPaired over {len(both)} states: only {a[0]}/{a[1]} passed {only_a}, only {b[0]}/{b[1]} passed {only_b}, "
-            f"both {sum(s[a].get('passed') and s[b].get('passed') for s in both)}, "
-            f"neither {sum(not s[a].get('passed') and not s[b].get('passed') for s in both)}.\n")
+        states.setdefault((r.get("source_tag"), r.get("takeover_tic")), {}).setdefault(
+            (r.get("variant", "cur"), r["arm"]), []).append(r)
+    a, out = cols[0], "\n"
+    for b in cols[1:]:
+        both = [s for s in states.values() if a in s and b in s]
+        pa = sum(sum(r["passed"] for r in s[a]) / len(s[a]) for s in both)
+        pb = sum(sum(r["passed"] for r in s[b]) / len(s[b]) for s in both)
+        only_a = sum(any(r["passed"] for r in s[a]) and not any(r["passed"] for r in s[b]) for s in both)
+        only_b = sum(any(r["passed"] for r in s[b]) and not any(r["passed"] for r in s[a]) for s in both)
+        out += (f"Paired over {len(both)} states: {a[0]}/{a[1]} {pa:.1f} passes, {b[0]}/{b[1]} {pb:.1f}; "
+                f"states only {a[0]} passed {only_a}, only {b[0]} passed {only_b}.\n")
+    return out
 
 
 def main(argv=None):
